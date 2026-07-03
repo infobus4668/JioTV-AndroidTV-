@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { jio } from "../config";
+import { jioRequest } from "./http";
 import type { AuthData } from "./types";
 
 export interface StreamData {
@@ -10,13 +11,32 @@ export interface StreamData {
   licenseHeaders: Record<string, string>;
 }
 
+/** Thrown for auth failures (401/403/419) so the caller can refresh + retry. */
+export class GeturlAuthError extends Error {
+  constructor(public status: number) {
+    super(`geturl failed (HTTP ${status})`);
+  }
+}
+
 /**
  * Resolves a channel to a playable stream + DRM info (mirrors JioApiClient.getStreamUrl, incl. the
- * exact header set from the Kodi plugin).
+ * exact header set + casing from the Kodi plugin / Android app — casing matters, see http.ts).
+ * @param streamType "Live" for live; "Seek" (with beginEpochMs) for catch-up.
  */
-export async function getStreamData(channelId: string, auth: AuthData): Promise<StreamData> {
-  const res = await fetch("https://jiotvapi.media.jio.com/playback/apis/v1.1/geturl", {
+export async function getStreamData(
+  channelId: string,
+  auth: AuthData,
+  opts: { streamType?: "Live" | "Seek"; beginEpochMs?: number } = {}
+): Promise<StreamData> {
+  const streamType = opts.streamType ?? "Live";
+  let body = `stream_type=${streamType}&channel_id=${encodeURIComponent(channelId)}`;
+  if (streamType === "Seek" && opts.beginEpochMs) {
+    body += `&begin=${Math.floor(opts.beginEpochMs / 1000)}`;
+  }
+
+  const res = await jioRequest({
     method: "POST",
+    url: "https://jiotvapi.media.jio.com/playback/apis/v1.1/geturl",
     headers: {
       Host: jio.HOST,
       Appkey: "NzNiMDhlYzQyNjJm",
@@ -43,11 +63,12 @@ export async function getStreamData(channelId: string, auth: AuthData): Promise<
       "user-agent": "okhttp/4.2.2",
       "Content-Type": "application/x-www-form-urlencoded",
     },
-    body: `stream_type=Live&channel_id=${encodeURIComponent(channelId)}`,
+    body,
   });
 
-  if (!res.ok) throw new Error(`geturl failed (HTTP ${res.status})`);
-  const json = (await res.json()) as any;
+  if (res.status === 401 || res.status === 403 || res.status === 419) throw new GeturlAuthError(res.status);
+  if (res.status < 200 || res.status >= 300) throw new Error(`geturl failed (HTTP ${res.status})`);
+  const json = JSON.parse(res.text) as any;
 
   let streamUrl: string = json.result ?? "";
   const mpd = json.mpd;

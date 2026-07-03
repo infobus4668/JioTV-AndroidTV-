@@ -1,9 +1,15 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { sendOtp, verifyOtp } from "../jio/auth";
-import { getStoredCredentials, saveCredentials, clearCredentials } from "../store/db";
 import {
-  isAdminConfigured, isAuthEnabled, verifyAdminPassword, setAdminPassword, disableAuth, ensureServerToken,
+  getStoredCredentials, saveCredentials, clearCredentials,
+  listCodes, addCode, deleteCode, hasCode,
+} from "../store/db";
+import {
+  isAdminConfigured, isAuthEnabled, verifyAdminPassword, setAdminPassword, disableAuth,
 } from "../store/settings";
+import { generateCode, normalizeCode, CODE_MIN, CODE_MAX } from "../util/code";
+import { hasCert, generateCert } from "../https";
+import { config } from "../config";
 import { refreshNow } from "../refresh";
 import { sessions, requireAdmin, requireServerToken } from "./auth";
 import { randomBytes } from "node:crypto";
@@ -12,6 +18,11 @@ function startSession(reply: FastifyReply) {
   const sid = randomBytes(24).toString("hex");
   sessions.add(sid);
   reply.setCookie("admin_session", sid, { httpOnly: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 24 * 7 });
+}
+
+/** Create a starter code so a TV can connect right after setup. */
+function ensureDefaultCode() {
+  if (listCodes().length === 0) addCode("Default", generateCode(6), Date.now());
 }
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
@@ -40,9 +51,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       }
       setAdminPassword(password);
     }
-    const serverToken = ensureServerToken();
+    ensureDefaultCode();
     startSession(reply);
-    return { ok: true, serverToken };
+    return { ok: true };
   });
 
   // Toggle auth later from the dashboard.
@@ -89,10 +100,39 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     };
   });
 
-  // The TV access token to paste into each device (generated on setup, stored in config.json).
-  app.get("/api/admin/config", { preHandler: requireAdmin }, async () => ({
-    serverToken: ensureServerToken(),
+  // ── TV access codes (named, short 4–12; a TV connects with any one of these) ──
+  app.get("/api/admin/codes", { preHandler: requireAdmin }, async () => ({ codes: listCodes() }));
+
+  app.post("/api/admin/codes", { preHandler: requireAdmin }, async (req, reply) => {
+    const { name, code, length } = (req.body ?? {}) as { name?: string; code?: string; length?: number };
+    let finalCode: string;
+    if (code && code.trim()) {
+      const norm = normalizeCode(code);
+      if (!norm) return reply.code(400).send({ error: `Code must be ${CODE_MIN}–${CODE_MAX} letters/digits` });
+      if (hasCode(norm)) return reply.code(409).send({ error: "That code already exists" });
+      finalCode = norm;
+    } else {
+      do { finalCode = generateCode(length ?? 6); } while (hasCode(finalCode));
+    }
+    addCode((name ?? "").trim() || "TV", finalCode, Date.now());
+    return { code: finalCode, name: (name ?? "").trim() || "TV" };
+  });
+
+  app.delete<{ Params: { code: string } }>(
+    "/api/admin/codes/:code",
+    { preHandler: requireAdmin },
+    async (req) => { deleteCode(req.params.code); return { ok: true }; }
+  );
+
+  // ── HTTPS (self-signed) info + regenerate ──
+  app.get("/api/admin/https", { preHandler: requireAdmin }, async () => ({
+    httpsPort: config.httpsPort,
+    hasCert: hasCert(),
   }));
+  app.post("/api/admin/https/regenerate", { preHandler: requireAdmin }, async () => {
+    generateCert();
+    return { ok: true, note: "New certificate written. Restart the server to apply it." };
+  });
 
   app.post("/api/login/otp/send", { preHandler: requireAdmin }, async (req, reply) => {
     const { mobile } = (req.body ?? {}) as { mobile?: string };

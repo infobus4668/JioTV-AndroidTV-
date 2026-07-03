@@ -28,6 +28,11 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS favorites (
     channel_id TEXT PRIMARY KEY
   );
+  CREATE TABLE IF NOT EXISTS access_codes (
+    code       TEXT PRIMARY KEY,
+    name       TEXT,
+    created_at INTEGER
+  );
 `);
 
 export interface StoredCredentials extends AuthData {
@@ -103,4 +108,36 @@ export function setFavorites(ids: string[]): void {
     for (const id of list) favAdd.run(id);
   });
   tx(ids);
+}
+
+// ── TV access codes (named, short; any valid code lets a TV pull credentials) ──
+export interface AccessCode {
+  code: string;
+  name: string;
+  createdAt: number;
+}
+
+const codeAll = db.prepare("SELECT code, name, created_at FROM access_codes ORDER BY created_at");
+const codeHasStmt = db.prepare("SELECT 1 FROM access_codes WHERE code = ?");
+const codeAdd = db.prepare("INSERT INTO access_codes (code, name, created_at) VALUES (?, ?, ?)");
+const codeDel = db.prepare("DELETE FROM access_codes WHERE code = ?");
+
+export function listCodes(): AccessCode[] {
+  return (codeAll.all() as Array<{ code: string; name: string; created_at: number }>).map((r) => ({
+    code: r.code,
+    name: r.name,
+    createdAt: r.created_at,
+  }));
+}
+
+export function hasCode(code: string): boolean {
+  return !!code && !!codeHasStmt.get(code);
+}
+
+export function addCode(name: string, code: string, nowMs: number): void {
+  codeAdd.run(code, name, nowMs);
+}
+
+export function deleteCode(code: string): void {
+  codeDel.run(code);
 }

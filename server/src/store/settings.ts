@@ -12,7 +12,6 @@ import { config } from "../config";
 
 interface FileConfig {
   adminPasswordHash?: string;
-  serverToken?: string;
   // When true, the user explicitly chose "no password" — the dashboard and TV endpoints are open.
   authDisabled?: boolean;
 }
@@ -95,18 +94,7 @@ export function disableAuth(): void {
   save(c);
 }
 
-/** The effective TV access token (env override, else the file value, else ""). */
-export function getServerToken(): string {
-  return config.serverToken || load().serverToken || "";
-}
-
-/** Returns the token, generating + persisting one on first use (unless an env override is set). */
-export function ensureServerToken(): string {
-  if (config.serverToken) return config.serverToken;
-  const c = load();
-  if (!c.serverToken) {
-    c.serverToken = randomBytes(24).toString("hex");
-    save(c);
-  }
-  return c.serverToken;
+/** Optional env-provided TV token (advanced/headless). "" when unset. TVs normally use access codes. */
+export function envServerToken(): string {
+  return config.serverToken || "";
 }

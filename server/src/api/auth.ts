@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { getServerToken, isAuthEnabled } from "../store/settings";
+import { envServerToken, isAuthEnabled } from "../store/settings";
+import { hasCode } from "../store/db";
 
 /** In-memory admin sessions (reset on restart — fine for a single self-hosted instance). */
 export const sessions = new Set<string>();
@@ -23,14 +24,16 @@ export function requireAdmin(req: FastifyRequest, reply: FastifyReply, done: () 
   done();
 }
 
-/** Guards the machine endpoint the TVs use to pull credentials (bearer token). Open when auth is off. */
+/** Guards the machine endpoint the TVs use to pull credentials. Open when auth is off; otherwise a
+ *  valid access code (any of the named codes) or the optional env token is required. */
 export function requireServerToken(req: FastifyRequest, reply: FastifyReply, done: () => void) {
   if (!isAuthEnabled()) return done();
   const header = req.headers["authorization"] ?? "";
-  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-  const expected = getServerToken();
-  if (!expected || !safeEqual(token, expected)) {
-    reply.code(401).send({ error: "Invalid access token" });
+  const token = (header.startsWith("Bearer ") ? header.slice(7) : "").trim();
+  const env = envServerToken();
+  const ok = (env && safeEqual(token, env)) || hasCode(token) || hasCode(token.toUpperCase());
+  if (!ok) {
+    reply.code(401).send({ error: "Invalid access code" });
     return;
   }
   done();

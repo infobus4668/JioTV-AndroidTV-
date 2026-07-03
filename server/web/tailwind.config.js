@@ -2,24 +2,35 @@
 export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
+    // Colours resolve to the design tokens in tokens.css (single source of truth, light + dark).
+    colors: {
+      transparent: "transparent",
+      current: "currentColor",
+      white: "#fff",
+      black: "#000",
+      bg: "var(--background)",
+      surface: "var(--surface)",
+      "surface-2": "var(--surface-2)",
+      "surface-hover": "var(--surface-hover)",
+      border: "var(--border)",
+      "border-strong": "var(--border-strong)",
+      fg: "var(--foreground)",
+      muted: "var(--muted-foreground)",
+      subtle: "var(--subtle-foreground)",
+      accent: "var(--accent)",
+      "accent-strong": "var(--accent-strong)",
+      success: "var(--success)",
+      warning: "var(--warning)",
+      error: "var(--error)",
+    },
     extend: {
-      colors: {
-        // Design tokens — matches the Android app's TiviMate-inspired dark palette.
-        bg: "#0d1117",
-        surface: "#161b22",
-        surface2: "#21262d",
-        border: "#30363d",
-        primary: "#9c27b0",
-        primary2: "#6a1b9a",
-        muted: "#8b949e",
-        text: "#f0f6fc",
-        live: "#ff4444",
-        ok: "#3fb950",
-        danger: "#f85149",
+      borderRadius: {
+        md: "var(--radius-md)",
+        lg: "var(--radius-lg)",
+        xl: "var(--radius-xl)",
+        full: "var(--radius-full)",
       },
-      boxShadow: {
-        card: "0 12px 40px rgba(0,0,0,.4)",
-      },
+      maxWidth: { container: "var(--container-max)" },
     },
   },
   plugins: [],

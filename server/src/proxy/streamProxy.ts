@@ -1,6 +1,7 @@
-import { getStreamData, type StreamData } from "../jio/stream";
+import { getStreamData, GeturlAuthError, type StreamData } from "../jio/stream";
 import { extractHdneaToken, extractTokenExpiryEpochSec } from "../jio/hdnea";
-import { getStoredCredentials } from "../store/db";
+import { refreshTokens } from "../jio/tokens";
+import { getStoredCredentials, updateTokens } from "../store/db";
 
 interface CachedStream {
   channelId: string;
@@ -14,8 +15,20 @@ const cache = new Map<string, CachedStream>();
 
 async function resolve(channelId: string): Promise<CachedStream> {
   const creds = getStoredCredentials();
-  if (!creds) throw new Error("No active login on the server");
-  const data = await getStreamData(channelId, creds);
+  if (!creds) throw new Error("No active login on the server — sign in on the Account page first.");
+  let data: StreamData;
+  try {
+    data = await getStreamData(channelId, creds);
+  } catch (e) {
+    // A 401/403/419 usually means the SSO token went stale — refresh once and retry (like the app).
+    if (e instanceof GeturlAuthError) {
+      const refreshed = await refreshTokens(creds);
+      updateTokens(refreshed, Date.now());
+      data = await getStreamData(channelId, refreshed);
+    } else {
+      throw e;
+    }
+  }
   const hdnea = extractHdneaToken(data.streamUrl);
   const expSec = extractTokenExpiryEpochSec(hdnea);
   const expiresAtMs = expSec > 0 ? expSec * 1000 : Date.now() + 90_000;
