@@ -18,8 +18,6 @@ export function WatchPage() {
 
   const now = Date.now();
   const current = useMemo(() => programs.find((p) => p.startMs <= now && p.stopMs > now), [programs, now]);
-  const past = useMemo(() => programs.filter((p) => p.stopMs <= now).slice(-8).reverse(), [programs, now]);
-  const upcoming = useMemo(() => programs.filter((p) => p.startMs > now).slice(0, 8), [programs, now]);
 
   const playCatchup = (p: EpgProgram) => { setCid(`${id}~${Math.floor(p.startMs / 1000)}`); setCatchTitle(p.title); };
   const goLive = () => { setCid(id); setCatchTitle(null); };
@@ -48,34 +46,8 @@ export function WatchPage() {
           </div>
         </div>
 
-        <aside className="grid gap-4">
-          {past.length > 0 && (
-            <div className="card !p-4">
-              <h3 className="mb-2 text-base">Previous shows</h3>
-              <div className="space-y-1">
-                {past.map((p) => (
-                  <button key={p.startMs} onClick={() => playCatchup(p)}
-                    className="w-full text-left px-2 py-2 rounded-md hover:bg-surface-hover transition-colors">
-                    <div className="text-sm truncate">{p.title}</div>
-                    <div className="text-subtle text-xs">{fmt(p.startMs)} – {fmt(p.stopMs)}</div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-          {upcoming.length > 0 && (
-            <div className="card !p-4">
-              <h3 className="mb-2 text-base">Up next</h3>
-              <div className="space-y-1">
-                {upcoming.map((p) => (
-                  <div key={p.startMs} className="px-2 py-2">
-                    <div className="text-sm truncate">{p.title}</div>
-                    <div className="text-subtle text-xs">{fmt(p.startMs)} – {fmt(p.stopMs)}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+        <aside>
+          <ProgrammeGuide programs={programs} onCatchup={playCatchup} onLive={goLive} />
         </aside>
       </div>
     </div>
@@ -83,6 +55,49 @@ export function WatchPage() {
 }
 
 function fmt(ms: number) { return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
+
+/** A scannable vertical programme guide: time · title · status, with an ON-NOW progress bar. */
+function ProgrammeGuide({ programs, onCatchup, onLive }: { programs: EpgProgram[]; onCatchup: (p: EpgProgram) => void; onLive: () => void }) {
+  const now = Date.now();
+  const nowRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => { nowRef.current?.scrollIntoView({ block: "center" }); }, [programs.length]);
+  if (programs.length === 0)
+    return <div className="card"><h3 className="text-base">Programme guide</h3><p className="text-subtle text-sm mt-1">No guide data for this channel.</p></div>;
+  return (
+    <div className="card !p-0 overflow-hidden">
+      <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+        <h3 className="text-base">Programme guide</h3>
+        <span className="text-subtle text-xs">{new Date(now).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })}</span>
+      </div>
+      <div className="max-h-[62vh] overflow-y-auto">
+        {programs.map((p) => {
+          const isNow = p.startMs <= now && p.stopMs > now;
+          const isPast = p.stopMs <= now;
+          const dur = Math.max(1, Math.round((p.stopMs - p.startMs) / 60000));
+          const prog = isNow ? Math.min(1, (now - p.startMs) / (p.stopMs - p.startMs)) : 0;
+          const clickable = isPast || isNow;
+          return (
+            <button key={p.startMs} ref={isNow ? nowRef : undefined} disabled={!clickable}
+              onClick={() => (isNow ? onLive() : onCatchup(p))}
+              style={isNow ? { background: "var(--accent-soft)" } : undefined}
+              className={`w-full text-left px-4 py-3 flex gap-3 border-b border-border last:border-0 transition-colors ${clickable ? "hover:bg-surface-hover cursor-pointer" : "opacity-55 cursor-default"}`}>
+              <div className={`w-14 shrink-0 text-sm tabular-nums ${isNow ? "text-accent font-medium" : "text-muted"}`}>{fmt(p.startMs)}</div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm truncate">{p.title}</span>
+                  {isNow && <span className="badge badge-accent shrink-0">ON NOW</span>}
+                  {isPast && <span className="badge shrink-0">Catch-up</span>}
+                </div>
+                <div className="text-subtle text-xs mt-0.5">{fmt(p.startMs)}–{fmt(p.stopMs)} · {dur}m</div>
+                {isNow && <div className="progress mt-2"><div className="bar" style={{ width: `${prog * 100}%` }} /></div>}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 function langName(code: string): string {
   try { return new Intl.DisplayNames([navigator.language], { type: "language" }).of(code) ?? code; } catch { return code; }
 }
@@ -97,6 +112,7 @@ function PlayerBox({ cid, title }: { cid: string; title: string }) {
   const hideTimer = useRef<number | undefined>(undefined);
 
   const [error, setError] = useState<string | null>(null);
+  const [notEntitled, setNotEntitled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [paused, setPaused] = useState(false);
   const [muted, setMuted] = useState(false);
@@ -110,7 +126,7 @@ function PlayerBox({ cid, title }: { cid: string; title: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    setError(null); setLoading(true);
+    setError(null); setNotEntitled(false); setLoading(true);
     async function start() {
       const video = videoRef.current; if (!video) return;
       shaka.polyfill.installAll();
@@ -118,6 +134,8 @@ function PlayerBox({ cid, title }: { cid: string; title: string }) {
       try {
         const info = await api.playInfo(cid);
         if (cancelled) return;
+        // Jio handed back a paywall fallback — the account isn't subscribed to this channel.
+        if (!info.entitled) { setNotEntitled(true); setError("Not in your JioTV subscription"); setLoading(false); return; }
         const player: any = new shaka.Player();
         playerRef.current = player;
         await player.attach(video);
@@ -181,11 +199,13 @@ function PlayerBox({ cid, title }: { cid: string; title: string }) {
         {loading && !error && <div className="h-9 w-9 rounded-full border-2 border-white/30 border-t-white animate-spin" />}
         {error && (
           <div className="card bg-surface max-w-sm mx-3 text-center pointer-events-auto">
-            <div className="text-error font-semibold text-sm">{error}</div>
+            <div className={`font-semibold text-sm ${notEntitled ? "text-warning" : "text-error"}`}>{error}</div>
             <p className="text-muted text-xs mt-2">
-              {location.protocol !== "https:" && location.hostname !== "localhost"
-                ? "Open the server’s https:// URL (Account → HTTPS) for DRM channels."
-                : "Some Jio channels use hardware DRM (L1) that desktop browsers can’t decrypt — those play on the TV app. Non-DRM channels work here."}
+              {notEntitled
+                ? "Jio returned a paywall fallback for this channel — your account doesn’t have the pack that includes it. Free/subscribed channels play fine."
+                : location.protocol !== "https:" && location.hostname !== "localhost"
+                  ? "For DRM channels, open the server’s https:// URL (Account → HTTPS)."
+                  : "If this is a DRM channel, it likely needs hardware DRM (L1), which desktop browsers can’t decrypt — it plays on the TV app."}
             </p>
           </div>
         )}
@@ -229,7 +249,9 @@ function PlayerBox({ cid, title }: { cid: string; title: string }) {
 
 function drmMessage(detail: any): string {
   const code = detail?.code;
-  // 6006/6007 = license request/response errors; 6001/6012 = key/CDM issues.
-  if (code && [6001, 6006, 6007, 6008, 6012].includes(code)) return "DRM error — this channel likely needs hardware DRM (L1), which desktop browsers don’t support. It plays on the TV app.";
+  // 1001 = BAD_HTTP_STATUS (the stream/CDN returned an error — usually not in your plan).
+  if (code === 1001) return "Stream unavailable — the CDN returned an error (often the channel isn’t in your plan).";
+  // 6001/6006/6007/6008/6012 = DRM key/license/CDM issues.
+  if (code && [6001, 6006, 6007, 6008, 6012].includes(code)) return "DRM error — this channel likely needs hardware DRM (L1), which desktop browsers can’t decrypt. It plays on the TV app.";
   return `Playback error ${code ?? ""}`.trim();
 }

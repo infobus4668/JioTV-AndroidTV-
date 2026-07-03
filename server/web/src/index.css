@@ -92,6 +92,9 @@
 
   .empty-state { padding: var(--space-8); text-align: center; color: var(--subtle-foreground); font-size: var(--text-base); }
 
+  .progress { height: 4px; background: var(--surface-2); border-radius: var(--radius-full); overflow: hidden; }
+  .progress > .bar { height: 100%; background: var(--accent); border-radius: inherit; transition: width var(--duration-3) var(--ease-out); }
+
   /* Embedded player box: 16:9 normally; fill the screen in fullscreen. */
   .player-box:fullscreen { width: 100vw; height: 100vh; border-radius: 0; }
   .player-box:fullscreen video { object-fit: contain; }

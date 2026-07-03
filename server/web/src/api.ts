@@ -14,6 +14,7 @@ export interface PlaybackInfo {
   isMpd: boolean;
   manifestUrl: string;
   hasDrm: boolean;
+  entitled: boolean;
 }
 
 export interface EpgProgram {

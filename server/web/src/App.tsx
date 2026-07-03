@@ -212,8 +212,8 @@ function Account() {
               <span className="text-muted">Tokens updated</span><span className="text-right">{st?.updatedAt ? new Date(st.updatedAt).toLocaleString() : "—"}</span>
             </div>
             <div className="flex gap-2 mt-5">
-              <button className="btn-secondary btn-sm" onClick={() => run(api.refresh, "Tokens refreshed.")}><IconRefresh /> Refresh</button>
-              <button className="btn-ghost btn-sm" onClick={() => run(api.logoutJio, "Jio account signed out.")}>Sign out Jio</button>
+              <button className="btn-secondary" onClick={() => run(api.refresh, "Tokens refreshed.")}><IconRefresh /> Refresh</button>
+              <button className="btn-ghost" onClick={() => run(api.logoutJio, "Jio account signed out.")}>Sign out Jio</button>
             </div>
           </div>
 
@@ -242,14 +242,14 @@ function Account() {
             {authEnabled ? (
               <div className="mt-2">
                 <p className="text-muted text-sm mb-3">Dashboard is password-protected.</p>
-                <button className="btn-secondary btn-sm" onClick={() => run(async () => { await api.disableAuth(); setAuthEnabled(false); }, "Password removed — dashboard is open.")}>Remove password</button>
+                <button className="btn-secondary" onClick={() => run(async () => { await api.disableAuth(); setAuthEnabled(false); }, "Password removed — dashboard is open.")}>Remove password</button>
               </div>
             ) : (
               <div className="mt-2">
                 <p className="text-muted text-sm mb-3">No password — open on your network (fine for a home LAN).</p>
                 <div className="flex gap-2">
                   <input className="input" type="password" placeholder="New password" value={newPw} onChange={(e) => setNewPw(e.target.value)} />
-                  <button className="btn-secondary btn-sm shrink-0" onClick={() => run(async () => { await api.setPassword(newPw); setNewPw(""); setAuthEnabled(true); }, "Password set.")}>Set password</button>
+                  <button className="btn-secondary shrink-0" onClick={() => run(async () => { await api.setPassword(newPw); setNewPw(""); setAuthEnabled(true); }, "Password set.")}>Set password</button>
                 </div>
               </div>
             )}
@@ -322,10 +322,10 @@ function HttpsCard() {
       {info && (
         <div className="flex items-center gap-2 mt-3">
           <input className="input font-mono text-sm" readOnly value={url} onFocus={(e) => e.target.select()} />
-          <a className="btn-secondary btn-sm shrink-0" href={url} target="_blank" rel="noreferrer">Open</a>
+          <a className="btn-secondary shrink-0" href={url} target="_blank" rel="noreferrer">Open</a>
         </div>
       )}
-      <button className="btn-ghost btn-sm mt-3" onClick={() => api.regenerateHttps().then((r) => setMsg(r.note)).catch((e) => setMsg(e.message))}>Regenerate certificate</button>
+      <button className="btn-ghost mt-3" onClick={() => api.regenerateHttps().then((r) => setMsg(r.note)).catch((e) => setMsg(e.message))}>Regenerate certificate</button>
       {msg && <p className="text-muted text-sm mt-2">{msg}</p>}
     </div>
   );
