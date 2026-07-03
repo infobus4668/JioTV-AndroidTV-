@@ -25,19 +25,24 @@ channels via [Shaka Player](https://github.com/shaka-project/shaka-player): a re
 every manifest/segment through `/api/proxy` (server injects the fresh token), and Widevine license
 requests go to `/api/play/:id/license`. Browser Widevine requires HTTPS — use the Caddy profile.
 
-## Quick start (Docker)
+## Quick start (Docker) — no `.env` needed
 
 ```bash
 cd server
-cp .env.example .env        # then edit the two secrets:
-#   JTV_SERVER_TOKEN  — long random string the TVs use   (openssl rand -hex 24)
-#   ADMIN_PASSWORD    — password for the web dashboard
 docker compose up -d --build
 ```
 
-Open `http://<host>:8080`, sign in with `ADMIN_PASSWORD`, then **Send OTP → Verify** with your Jio
-number. On each TV: **Settings → Sign-in Method → Connect to JTV Proxy Server**, enter the server URL
-and `JTV_SERVER_TOKEN`.
+Then set everything up **in the browser** (nothing to edit on disk):
+
+1. Open `http://<host>:8080` → **create an admin password** (first-run wizard). It's saved to
+   `data/config.json`, and a **TV access token** is generated for you.
+2. **Account** tab → **Send OTP → Verify** with your Jio number (one time).
+3. Copy the **TV access token** shown on the Account page.
+4. On each TV: **Settings → Sign-in Method → Connect to JTV Proxy Server**, enter the server URL +
+   that token. Add as many TVs as you like — no per-device login.
+
+> Prefer headless/automated config? Set `ADMIN_PASSWORD` / `JTV_SERVER_TOKEN` in `.env` (see
+> `.env.example`) and they override the browser-configured values.
 
 > Browser Widevine playback (Phase 2) needs HTTPS. An optional Caddy profile is included:
 > edit `Caddyfile` with your domain, then `docker compose --profile https up -d`.

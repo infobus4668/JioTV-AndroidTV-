@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { config } from "../config";
+import { getServerToken } from "../store/settings";
 
 /** In-memory admin sessions (reset on restart — fine for a single self-hosted instance). */
 export const sessions = new Set<string>();
@@ -26,7 +26,8 @@ export function requireAdmin(req: FastifyRequest, reply: FastifyReply, done: () 
 export function requireServerToken(req: FastifyRequest, reply: FastifyReply, done: () => void) {
   const header = req.headers["authorization"] ?? "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (!config.serverToken || !safeEqual(token, config.serverToken)) {
+  const expected = getServerToken();
+  if (!expected || !safeEqual(token, expected)) {
     reply.code(401).send({ error: "Invalid access token" });
     return;
   }

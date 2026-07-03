@@ -4,14 +4,51 @@ import { Player } from "./Player";
 
 export default function App() {
   const [authed, setAuthed] = useState<boolean | null>(null);
+  const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
 
   useEffect(() => {
+    api.setupState().then((s) => setNeedsSetup(s.needsSetup)).catch(() => setNeedsSetup(false));
     api.adminStatus().then(() => setAuthed(true)).catch(() => setAuthed(false));
   }, []);
 
-  if (authed === null) return <div className="grid place-items-center h-full text-muted">Loading…</div>;
+  if (authed === null || needsSetup === null)
+    return <div className="grid place-items-center h-full text-muted">Loading…</div>;
+  if (needsSetup && !authed) return <SetupWizard onDone={() => { setNeedsSetup(false); setAuthed(true); }} />;
   if (!authed) return <Login onLogin={() => setAuthed(true)} />;
   return <Shell onLogout={() => setAuthed(false)} />;
+}
+
+function SetupWizard({ onDone }: { onDone: () => void }) {
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    setErr("");
+    if (pw.length < 4) return setErr("Use at least 4 characters.");
+    if (pw !== pw2) return setErr("Passwords don’t match.");
+    setBusy(true);
+    try { await api.setup(pw); onDone(); }
+    catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+  };
+  return (
+    <div className="grid place-items-center h-full p-6">
+      <div className="card p-7 w-full max-w-sm">
+        <h1 className="text-2xl font-bold">Welcome to JTV <span className="text-primary">●</span></h1>
+        <p className="text-muted text-sm mt-1 mb-5">First run — create an admin password. It’s saved on
+          the server (no <code>.env</code> needed).</p>
+        <label className="text-sm text-muted">New admin password</label>
+        <input className="input mt-1.5" type="password" value={pw} onChange={(e) => setPw(e.target.value)} />
+        <label className="text-sm text-muted mt-3 block">Confirm password</label>
+        <input className="input mt-1.5" type="password" value={pw2} onChange={(e) => setPw2(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && submit()} />
+        <button className="btn-primary w-full mt-4" disabled={busy} onClick={submit}>
+          {busy ? "Creating…" : "Create & continue"}
+        </button>
+        {err && <div className="text-danger text-sm mt-3">{err}</div>}
+      </div>
+    </div>
+  );
 }
 
 function Login({ onLogin }: { onLogin: () => void }) {
@@ -138,9 +175,14 @@ function Account() {
   const [otp, setOtp] = useState("");
   const [step, setStep] = useState<1 | 2>(1);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [token, setToken] = useState("");
+  const [copied, setCopied] = useState(false);
 
   const refresh = () => api.adminStatus().then(setSt).catch(() => {});
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    refresh();
+    api.adminConfig().then((r) => setToken(r.serverToken)).catch(() => {});
+  }, []);
 
   const run = async (fn: () => Promise<unknown>, okText: string) => {
     setMsg(null);
@@ -198,9 +240,20 @@ function Account() {
       </div>
       {msg && <div className={`mt-3 text-sm ${msg.ok ? "text-ok" : "text-danger"}`}>{msg.text}</div>}
 
+      <div className="card p-5 mt-4">
+        <h3 className="font-semibold mb-1">TV access token</h3>
+        <p className="text-muted text-xs mb-3">Paste this into each TV to connect it. Keep it private.</p>
+        <div className="flex gap-2">
+          <input className="input font-mono text-sm" readOnly value={token} onFocus={(e) => e.target.select()} />
+          <button className="btn-ghost shrink-0" onClick={async () => {
+            try { await navigator.clipboard.writeText(token); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch {}
+          }}>{copied ? "Copied ✓" : "Copy"}</button>
+        </div>
+      </div>
+
       <p className="text-muted text-xs mt-6 leading-relaxed">
         On each TV: <b>Settings → Sign-in Method → Connect to JTV Proxy Server</b>, enter this server’s
-        URL and your <code>JTV_SERVER_TOKEN</code>. TVs pull credentials from here and never log in again.
+        URL and the token above. TVs pull credentials from here and never log in again.
       </p>
     </div>
   );

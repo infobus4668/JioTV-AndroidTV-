@@ -6,13 +6,11 @@ import { config } from "./config";
 import { registerRoutes } from "./api/routes";
 import { registerPlayRoutes } from "./api/play";
 import { startRefreshScheduler } from "./refresh";
+import { isAdminConfigured } from "./store/settings";
 
 async function main() {
-  if (!config.serverToken) {
-    console.warn("⚠  JTV_SERVER_TOKEN is not set — TVs will be unable to authenticate. Set it in .env.");
-  }
-  if (!config.adminPassword) {
-    console.warn("⚠  ADMIN_PASSWORD is not set — the dashboard cannot be used. Set it in .env.");
+  if (!isAdminConfigured()) {
+    console.log("ℹ  First run — open the web UI to create an admin password (no .env editing needed).");
   }
 
   const app = Fastify({ logger: { level: "info" }, bodyLimit: 8_388_608 });

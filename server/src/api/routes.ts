@@ -1,10 +1,18 @@
-import { randomBytes } from "node:crypto";
-import type { FastifyInstance } from "fastify";
-import { config } from "../config";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { sendOtp, verifyOtp } from "../jio/auth";
 import { getStoredCredentials, saveCredentials, clearCredentials } from "../store/db";
+import {
+  isAdminConfigured, verifyAdminPassword, setAdminPassword, ensureServerToken,
+} from "../store/settings";
 import { refreshNow } from "../refresh";
-import { sessions, safeEqual, requireAdmin, requireServerToken } from "./auth";
+import { sessions, requireAdmin, requireServerToken } from "./auth";
+import { randomBytes } from "node:crypto";
+
+function startSession(reply: FastifyReply) {
+  const sid = randomBytes(24).toString("hex");
+  sessions.add(sid);
+  reply.setCookie("admin_session", sid, { httpOnly: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 24 * 7 });
+}
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // ── Public health (no secrets) ──
@@ -13,20 +21,31 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     return { ok: true, hasCredentials: !!c };
   });
 
+  // ── First-run setup (browser, no .env needed) ──
+  // Tells the SPA whether to show the "create admin password" wizard or the login screen.
+  app.get("/api/setup/state", async () => ({ needsSetup: !isAdminConfigured() }));
+
+  // Only allowed while no admin password exists. Sets it, generates the TV token, logs the user in.
+  app.post("/api/setup", async (req, reply) => {
+    if (isAdminConfigured()) return reply.code(403).send({ error: "Already set up" });
+    const { password } = (req.body ?? {}) as { password?: string };
+    if (!password || password.length < 4) {
+      return reply.code(400).send({ error: "Choose a password of at least 4 characters" });
+    }
+    setAdminPassword(password);
+    const serverToken = ensureServerToken();
+    startSession(reply);
+    return { ok: true, serverToken };
+  });
+
   // ── Admin auth ──
   app.post("/api/admin/login", async (req, reply) => {
     const { password } = (req.body ?? {}) as { password?: string };
-    if (!config.adminPassword || !password || !safeEqual(password, config.adminPassword)) {
+    if (!isAdminConfigured()) return reply.code(409).send({ error: "Not set up yet" });
+    if (!password || !verifyAdminPassword(password)) {
       return reply.code(401).send({ error: "Wrong password" });
     }
-    const sid = randomBytes(24).toString("hex");
-    sessions.add(sid);
-    reply.setCookie("admin_session", sid, {
-      httpOnly: true,
-      sameSite: "lax",
-      path: "/",
-      maxAge: 60 * 60 * 24 * 7,
-    });
+    startSession(reply);
     return { ok: true };
   });
 
@@ -46,6 +65,11 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       updatedAt: c?.updatedAt ?? 0,
     };
   });
+
+  // The TV access token to paste into each device (generated on setup, stored in config.json).
+  app.get("/api/admin/config", { preHandler: requireAdmin }, async () => ({
+    serverToken: ensureServerToken(),
+  }));
 
   app.post("/api/login/otp/send", { preHandler: requireAdmin }, async (req, reply) => {
     const { mobile } = (req.body ?? {}) as { mobile?: string };

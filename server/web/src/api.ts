@@ -35,6 +35,9 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   status: () => req<{ ok: boolean; hasCredentials: boolean }>("/api/status"),
+  setupState: () => req<{ needsSetup: boolean }>("/api/setup/state"),
+  setup: (password: string) => req<{ ok: boolean; serverToken: string }>("/api/setup", { method: "POST", body: JSON.stringify({ password }) }),
+  adminConfig: () => req<{ serverToken: string }>("/api/admin/config"),
   adminStatus: () => req<{ loggedIn: boolean; mobile: string; updatedAt: number }>("/api/admin/status"),
   login: (password: string) => req("/api/admin/login", { method: "POST", body: JSON.stringify({ password }) }),
   logout: () => req("/api/admin/logout", { method: "POST", body: "{}" }),
