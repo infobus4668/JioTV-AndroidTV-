@@ -1,21 +1,32 @@
-*.iml
-.gradle
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
-local.properties
-*.apk
+# ── Monorepo root ──
+# android/  → the Android TV app (has its own android/.gitignore)
+# server/   → self-hostable companion server (Node/TS + React, Docker)
 
-# Release signing — keep secrets out of version control
+# OS / IDE
+.DS_Store
+*.iml
+.idea/
+*.lnk
+
+# Gradle / Android caches & secrets (also covered by android/.gitignore; belt-and-suspenders)
+**/.gradle/
+**/.kotlin/
+**/build/
+*.apk
+local.properties
 keystore.properties
 *.keystore
 *.jks
+
+# ── server/ (Node) ──
+server/**/node_modules/
+server/**/dist/
+server/.env
+server/.env.*
+!server/.env.example
+server/data/
+npm-debug.log*
+
+# Committed binaries that don't belong in VCS (flagged in audit; kept ignored going forward)
+gh.zip
+gh_cli/

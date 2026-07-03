@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+   Auto-backup rules (API < 31).
+   See https://developer.android.com/guide/topics/data/autobackup
+-->
+<full-backup-content>
+    <!-- The "settings" Preferences DataStore holds the Jio SSO/auth tokens in plaintext. Exclude the
+         whole datastore directory so credentials are never captured by `adb backup` / cloud backup. -->
+    <exclude domain="file" path="datastore/" />
+</full-backup-content>
