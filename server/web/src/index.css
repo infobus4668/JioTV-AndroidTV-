@@ -92,6 +92,9 @@
 
   .empty-state { padding: var(--space-8); text-align: center; color: var(--subtle-foreground); font-size: var(--text-base); }
 
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+
   .progress { height: 4px; background: var(--surface-2); border-radius: var(--radius-full); overflow: hidden; }
   .progress > .bar { height: 100%; background: var(--accent); border-radius: inherit; transition: width var(--duration-3) var(--ease-out); }
 

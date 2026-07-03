@@ -252,6 +252,7 @@ function Account() {
 
           <div className="lg:col-span-2"><CodesCard /></div>
           <HttpsCard />
+          <EpgCard />
 
           <div className="card">
             <h3>Security</h3>
@@ -318,6 +319,46 @@ function CodesCard() {
         <button className="btn-primary" onClick={add}><IconPlus /> Add</button>
       </div>
       {err && <p className="text-error text-sm mt-2">{err}</p>}
+    </div>
+  );
+}
+
+/* ── EPG source ────────────────────────────────────────────────────────── */
+function EpgCard() {
+  const [cfg, setCfg] = useState<{ mode: "native" | "xmltv"; url: string; status: string; lastSync: number; channels: number } | null>(null);
+  const [url, setUrl] = useState("");
+  const [msg, setMsg] = useState("");
+  const load = () => api.epgConfig().then((c) => { setCfg(c); setUrl(c.url); }).catch(() => {});
+  useEffect(() => { load(); }, []);
+  const save = async (mode: "native" | "xmltv") => {
+    setMsg(""); try { await api.setEpgConfig(mode, url); await load(); setMsg("Saved."); } catch (e: any) { setMsg(e.message); }
+  };
+  const refresh = async () => {
+    setMsg("Downloading…"); try { const r = await api.refreshEpg(); setMsg(`Loaded ${r.channels} channels.`); load(); } catch (e: any) { setMsg(e.message); }
+  };
+  if (!cfg) return null;
+  return (
+    <div className="card">
+      <h3>EPG source</h3>
+      <p className="text-muted text-sm mt-1">Native = Jio’s per-channel guide. XMLTV = a downloaded guide file (.xml or .xml.gz).</p>
+      <div className="tabs mt-3">
+        <button className={`tab ${cfg.mode === "native" ? "active" : ""}`} onClick={() => save("native")}>Native</button>
+        <button className={`tab ${cfg.mode === "xmltv" ? "active" : ""}`} onClick={() => save("xmltv")}>XMLTV</button>
+      </div>
+      <label className="text-sm text-muted mt-3 block">XMLTV URL</label>
+      <div className="flex gap-2 mt-1">
+        <input className="input font-mono text-sm" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…/epg.xml.gz" />
+        <button className="btn-secondary shrink-0" onClick={() => save(cfg.mode)}>Save</button>
+      </div>
+      {cfg.mode === "xmltv" && (
+        <div className="flex items-center gap-3 mt-3 flex-wrap">
+          <button className="btn-secondary" onClick={refresh}>Refresh now</button>
+          <span className="text-subtle text-xs">
+            {cfg.status}{cfg.channels ? ` · ${cfg.channels} channels` : ""}{cfg.lastSync ? ` · ${new Date(cfg.lastSync).toLocaleString()}` : ""}
+          </span>
+        </div>
+      )}
+      {msg && <p className="text-muted text-sm mt-2">{msg}</p>}
     </div>
   );
 }

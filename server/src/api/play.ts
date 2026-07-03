@@ -3,6 +3,8 @@ import type { FastifyInstance } from "fastify";
 import { requireAdmin, requireServerToken } from "./auth";
 import { getChannels } from "../jio/channels";
 import { getNativeEpg } from "../jio/epg";
+import { getXmltvEpg, refreshXmltv, xmltvStatus } from "../jio/xmltvEpg";
+import { getEpgConfig, setEpgConfig } from "../store/settings";
 import { getFavorites, toggleFavorite, setFavorites } from "../store/db";
 import { getPlaybackInfo, proxyUpstream, proxyLicense, rewriteManifest } from "../proxy/streamProxy";
 
@@ -18,8 +20,35 @@ export async function registerPlayRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { id: string } }>(
     "/api/epg/:id",
     { preHandler: requireAdmin },
-    async (req) => ({ programs: await getNativeEpg(req.params.id) })
+    async (req) => {
+      // Use the XMLTV guide when configured (and it has data for this channel), else native Jio EPG.
+      if (getEpgConfig().mode === "xmltv") {
+        const x = getXmltvEpg(req.params.id);
+        if (x.length) return { programs: x };
+      }
+      return { programs: await getNativeEpg(req.params.id) };
+    }
   );
+
+  // EPG source config + XMLTV refresh.
+  app.get("/api/admin/epg", { preHandler: requireAdmin }, async () => ({ ...getEpgConfig(), ...xmltvStatus() }));
+  app.post("/api/admin/epg", { preHandler: requireAdmin }, async (req) => {
+    const { mode, url } = (req.body ?? {}) as { mode?: "native" | "xmltv"; url?: string };
+    setEpgConfig(mode === "xmltv" ? "xmltv" : "native", url ?? "");
+    const cfg = getEpgConfig();
+    if (cfg.mode === "xmltv") refreshXmltv(cfg.url).catch(() => {}); // fire-and-forget download
+    return { ok: true };
+  });
+  app.post("/api/admin/epg/refresh", { preHandler: requireAdmin }, async (_req, reply) => {
+    const cfg = getEpgConfig();
+    if (cfg.mode !== "xmltv") return reply.code(400).send({ error: "EPG mode is Native — switch to XMLTV first." });
+    try {
+      await refreshXmltv(cfg.url);
+      return { ok: true, ...xmltvStatus() };
+    } catch (e) {
+      return reply.code(502).send({ error: (e as Error).message });
+    }
+  });
 
   // ── Favorites (shared across TVs + web player) ──
   // Web player (admin session):

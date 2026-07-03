@@ -16,6 +16,9 @@ export async function refreshTokens(auth: AuthData): Promise<AuthData> {
     url: "https://auth.media.jio.com/tokenservice/apis/v1/refreshtoken?langId=6",
     headers: {
       ssotoken: auth.ssoToken,
+      // The CURRENT access token is required as a header alongside the refreshToken body field —
+      // without it Jio always answers "refresh token has expired" (verified against the live API).
+      accesstoken: auth.authToken,
       appName: jio.APP_NAME,
       os: jio.OS,
       devicetype: jio.DEVICE_TYPE,

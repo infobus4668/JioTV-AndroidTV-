@@ -14,6 +14,23 @@ interface FileConfig {
   adminPasswordHash?: string;
   // When true, the user explicitly chose "no password" — the dashboard and TV endpoints are open.
   authDisabled?: boolean;
+  // EPG source: "native" (per-channel Jio EPG) or "xmltv" (a downloaded XMLTV guide).
+  epgMode?: "native" | "xmltv";
+  epgUrl?: string;
+}
+
+const DEFAULT_EPG_URL = "https://avkb.short.gy/epg.xml.gz";
+
+export function getEpgConfig(): { mode: "native" | "xmltv"; url: string } {
+  const c = load();
+  return { mode: c.epgMode ?? "native", url: c.epgUrl ?? DEFAULT_EPG_URL };
+}
+
+export function setEpgConfig(mode: "native" | "xmltv", url: string): void {
+  const c = load();
+  c.epgMode = mode;
+  c.epgUrl = url || DEFAULT_EPG_URL;
+  save(c);
 }
 
 const file = path.join(config.dataDir, "config.json");

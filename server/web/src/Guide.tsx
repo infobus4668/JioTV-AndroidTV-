@@ -39,7 +39,7 @@ export function GuidePage() {
         <h2>TV guide</h2>
         <LanguageMenu available={languages} langs={langs} onToggle={toggleLang} onClear={clearLangs} />
       </div>
-      <div className="mb-4 overflow-x-auto pb-1">
+      <div className="mb-4 overflow-x-auto no-scrollbar">
         <div className="tabs w-max">
           {groups.map((g) => (
             <button key={g} className={`tab whitespace-nowrap ${group === g ? "active" : ""}`} onClick={() => setGroup(g)}>{g}</button>
