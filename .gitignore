@@ -30,3 +30,6 @@ npm-debug.log*
 # Committed binaries that don't belong in VCS (flagged in audit; kept ignored going forward)
 gh.zip
 gh_cli/
+
+# local run logs
+server/local-run.log
