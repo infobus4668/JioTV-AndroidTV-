@@ -4,7 +4,7 @@ import { refreshTokens } from "../jio/tokens";
 import { getStoredCredentials, updateTokens } from "../store/db";
 
 interface CachedStream {
-  channelId: string;
+  key: string;
   data: StreamData;
   hdnea: string;
   expiresAtMs: number;
@@ -13,18 +13,26 @@ interface CachedStream {
 const HDNEA_MARKER = "__hdnea__=";
 const cache = new Map<string, CachedStream>();
 
-async function resolve(channelId: string): Promise<CachedStream> {
+/** A playback key is either "channelId" (live) or "channelId~beginEpochSec" (catch-up). */
+function parseKey(key: string): { channelId: string; beginSec: number } {
+  const i = key.indexOf("~");
+  return i >= 0 ? { channelId: key.slice(0, i), beginSec: Number(key.slice(i + 1)) || 0 } : { channelId: key, beginSec: 0 };
+}
+
+async function resolve(key: string): Promise<CachedStream> {
+  const { channelId, beginSec } = parseKey(key);
   const creds = getStoredCredentials();
   if (!creds) throw new Error("No active login on the server — sign in on the Account page first.");
+  const opts = beginSec > 0 ? { streamType: "Seek" as const, beginEpochMs: beginSec * 1000 } : {};
   let data: StreamData;
   try {
-    data = await getStreamData(channelId, creds);
+    data = await getStreamData(channelId, creds, opts);
   } catch (e) {
     // A 401/403/419 usually means the SSO token went stale — refresh once and retry (like the app).
     if (e instanceof GeturlAuthError) {
       const refreshed = await refreshTokens(creds);
       updateTokens(refreshed, Date.now());
-      data = await getStreamData(channelId, refreshed);
+      data = await getStreamData(channelId, refreshed, opts);
     } else {
       throw e;
     }
@@ -32,16 +40,16 @@ async function resolve(channelId: string): Promise<CachedStream> {
   const hdnea = extractHdneaToken(data.streamUrl);
   const expSec = extractTokenExpiryEpochSec(hdnea);
   const expiresAtMs = expSec > 0 ? expSec * 1000 : Date.now() + 90_000;
-  const entry: CachedStream = { channelId, data, hdnea, expiresAtMs };
-  cache.set(channelId, entry);
+  const entry: CachedStream = { key, data, hdnea, expiresAtMs };
+  cache.set(key, entry);
   return entry;
 }
 
 /** Returns cached stream data, re-resolving a fresh __hdnea__ token ~15s before it expires. */
-export async function getStream(channelId: string): Promise<CachedStream> {
-  const c = cache.get(channelId);
+export async function getStream(key: string): Promise<CachedStream> {
+  const c = cache.get(key);
   if (c && Date.now() < c.expiresAtMs - 15_000) return c;
-  return resolve(channelId);
+  return resolve(key);
 }
 
 /** Rewrites the `__hdnea__` query token in a Jio URL to the freshest one. */
@@ -133,11 +141,11 @@ export function rewriteManifest(
   return null;
 }
 
-/** The real manifest URL + DRM flags the web player needs to configure Shaka. */
-export async function getPlaybackInfo(channelId: string) {
-  const c = await getStream(channelId);
+/** The real manifest URL + DRM flags the web player needs to configure Shaka. `key` is the cid. */
+export async function getPlaybackInfo(key: string) {
+  const c = await getStream(key);
   return {
-    channelId,
+    channelId: key,
     isMpd: c.data.isMpd,
     manifestUrl: c.data.streamUrl,
     hasDrm: c.data.isMpd && c.data.licenseUrl.length > 0,

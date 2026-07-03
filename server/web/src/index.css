@@ -90,4 +90,8 @@
   .table td { padding: var(--space-3); border-bottom: 1px solid var(--border); }
 
   .empty-state { padding: var(--space-8); text-align: center; color: var(--subtle-foreground); font-size: var(--text-base); }
+
+  /* Embedded player box: 16:9 normally; fill the screen in fullscreen. */
+  .player-box:fullscreen { width: 100vw; height: 100vh; border-radius: 0; }
+  .player-box:fullscreen video { object-fit: contain; }
 }

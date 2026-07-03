@@ -14,8 +14,9 @@ async function buildApp(extra?: Record<string, unknown>): Promise<FastifyInstanc
   // `extra` may carry an `https` option; cast because that changes Fastify's inferred server type.
   const app = Fastify({ logger: { level: "info" }, bodyLimit: 8_388_608, ...(extra as any) }) as unknown as FastifyInstance;
 
-  // Widevine license challenges arrive as raw binary.
-  app.addContentTypeParser("application/octet-stream", { parseAs: "buffer" }, (_req, body, done) => done(null, body));
+  // Widevine license challenges arrive as raw binary — Shaka may send them with an unexpected (or no)
+  // content-type, so parse ANY non-JSON body as a Buffer (JSON keeps Fastify's built-in parser).
+  app.addContentTypeParser("*", { parseAs: "buffer" }, (_req, body, done) => done(null, body));
 
   await app.register(cookie);
   await registerRoutes(app);

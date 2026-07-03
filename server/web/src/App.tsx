@@ -42,10 +42,10 @@ export default function App() {
       <Route element={<Layout onLogout={() => setAuthed(false)} />}>
         <Route index element={<Navigate to="/channels" replace />} />
         <Route path="channels" element={<Channels />} />
+        <Route path="watch/:id" element={<WatchPage />} />
         <Route path="account" element={<Account />} />
+        <Route path="*" element={<Navigate to="/channels" replace />} />
       </Route>
-      <Route path="watch/:id" element={<WatchPage />} />
-      <Route path="*" element={<Navigate to="/channels" replace />} />
     </Routes>
   );
 }
@@ -98,7 +98,7 @@ function Layout({ onLogout }: { onLogout: () => void }) {
   const link = ({ isActive }: { isActive: boolean }) => `tab ${isActive ? "active" : ""}`;
   return (
     <div className="h-full flex flex-col">
-      <header className="flex items-center gap-4 px-6 h-16 border-b border-border shrink-0">
+      <header className="flex items-center gap-4 px-5 h-14 border-b border-border shrink-0">
         <div className="flex items-center gap-2 font-semibold"><IconTv className="text-accent" /> JTV Server</div>
         <nav className="tabs ml-2">
           <NavLink to="/channels" className={link}><IconTv size={15} /> Channels</NavLink>
@@ -109,7 +109,7 @@ function Layout({ onLogout }: { onLogout: () => void }) {
           <button className="icon-btn" title="Log out" onClick={logout}><IconLogOut /></button>
         </div>
       </header>
-      <main className="flex-1 overflow-auto"><Outlet /></main>
+      <main className="flex-1 min-h-0 overflow-y-auto"><Outlet /></main>
     </div>
   );
 }
@@ -120,7 +120,7 @@ function Channels() {
   const [channels, setChannels] = useState<Channel[] | null>(null);
   const [err, setErr] = useState(""); const [group, setGroup] = useState("All");
   const [q, setQ] = useState(""); const [favs, setFavs] = useState<Set<string>>(new Set());
-  const FAV = "★ Favorites";
+  const FAV = "Favorites";
 
   useEffect(() => {
     api.channels().then((r) => setChannels(r.channels)).catch((e) => setErr(e.message));
@@ -140,29 +140,33 @@ function Channels() {
   if (!channels) return <div className="empty-state">Loading channels…</div>;
 
   return (
-    <div className="flex h-full">
-      <aside className="w-56 shrink-0 border-r border-border overflow-auto p-2">
+    <div className="flex h-full min-h-0">
+      <aside className="w-52 shrink-0 border-r border-border overflow-y-auto py-3 px-2">
         {groups.map((g) => (
           <button key={g} onClick={() => setGroup(g)}
-            className={`block w-full text-left px-3 py-2 rounded-md text-sm truncate ${group === g ? "bg-surface-2 text-fg" : "text-muted hover:text-fg hover:bg-surface-hover"}`}>{g}</button>
+            className={`flex items-center gap-2 w-full text-left px-3 py-2 rounded-md text-sm truncate transition-colors ${group === g ? "bg-surface-2 text-fg" : "text-muted hover:text-fg hover:bg-surface-hover"}`}>
+            {g === FAV && <IconStar size={14} filled={group === g} />}{g}
+          </button>
         ))}
       </aside>
-      <section className="flex-1 overflow-auto p-6">
-        <div className="relative max-w-sm mb-5">
-          <IconSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-subtle" size={16} />
-          <input className="input pl-9" placeholder="Search channels…" value={q} onChange={(e) => setQ(e.target.value)} />
+      <section className="flex-1 min-w-0 overflow-y-auto">
+        <div className="sticky top-0 z-10 bg-bg/95 backdrop-blur px-6 py-4 border-b border-border">
+          <div className="relative max-w-sm">
+            <IconSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-subtle" size={16} />
+            <input className="input pl-9" placeholder="Search channels…" value={q} onChange={(e) => setQ(e.target.value)} />
+          </div>
         </div>
         {filtered.length === 0 ? (
-          <div className="empty-state">{group === FAV ? "No favourites yet — tap the star on a channel." : "No channels match."}</div>
+          <div className="empty-state">{group === FAV ? "No favourites yet — hover a channel and tap the star." : "No channels match."}</div>
         ) : (
-          <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(148px, 1fr))" }}>
+          <div className="grid gap-4 p-6" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))" }}>
             {filtered.map((c) => (
               <div key={c.id} className="relative group">
                 <button onClick={() => nav(`/watch/${c.id}`, { state: { name: c.name } })}
-                  className="card w-full !p-4 flex flex-col items-center gap-2 hover:border-border-strong transition-colors">
-                  <img src={c.logoUrl} alt="" className="h-14 w-14 rounded-full object-cover bg-surface-2"
+                  className="card card-hover w-full !p-4 flex flex-col items-center gap-3 aspect-[4/5] justify-center">
+                  <img src={c.logoUrl} alt="" className="h-16 w-16 rounded-full object-cover bg-surface-2"
                     onError={(e) => ((e.target as HTMLImageElement).style.visibility = "hidden")} />
-                  <div className="text-sm text-center line-clamp-2">{c.name}</div>
+                  <div className="text-sm text-center leading-snug line-clamp-2">{c.name}</div>
                 </button>
                 <button onClick={() => toggleFav(c.id)} title="Favourite"
                   className={`absolute top-2 right-2 ${favs.has(c.id) ? "text-accent" : "text-subtle opacity-0 group-hover:opacity-100"} transition-opacity`}>
@@ -192,58 +196,64 @@ function Account() {
   };
 
   return (
-    <div className="p-6 max-w-3xl mx-auto grid gap-4">
-      <div className="card">
-        <div className="flex items-center justify-between">
-          <h3>Jio account</h3>
-          <span className={`badge ${st?.loggedIn ? "badge-success" : "badge-error"}`}>{st?.loggedIn ? "Signed in" : "Not signed in"}</span>
-        </div>
-        <div className="grid grid-cols-2 gap-y-2 mt-4 text-sm">
-          <span className="text-muted">Mobile</span><span className="text-right">{st?.mobile || "—"}</span>
-          <span className="text-muted">Tokens updated</span><span className="text-right">{st?.updatedAt ? new Date(st.updatedAt).toLocaleString() : "—"}</span>
-        </div>
-        <div className="flex gap-2 mt-5">
-          <button className="btn-secondary btn-sm" onClick={() => run(api.refresh, "Tokens refreshed.")}><IconRefresh /> Refresh</button>
-          <button className="btn-ghost btn-sm" onClick={() => run(api.logoutJio, "Jio account signed out.")}>Sign out Jio</button>
-        </div>
-      </div>
-
-      <div className="card">
-        <h3>Sign in to Jio</h3>
-        {step === 1 ? (
-          <div className="flex gap-2 mt-3">
-            <input className="input" inputMode="numeric" placeholder="10-digit mobile number" value={mobile} onChange={(e) => setMobile(e.target.value)} />
-            <button className="btn-primary shrink-0" onClick={() => run(async () => { await api.sendOtp(mobile); setStep(2); }, "OTP sent.")}>Send OTP</button>
-          </div>
-        ) : (
-          <div className="flex gap-2 mt-3">
-            <input className="input" inputMode="numeric" placeholder="Enter OTP" value={otp} onChange={(e) => setOtp(e.target.value)} />
-            <button className="btn-primary shrink-0" onClick={() => run(async () => { await api.verifyOtp(mobile, otp); setStep(1); setOtp(""); }, "Signed in — all TVs will pick this up.")}>Verify</button>
-            <button className="btn-ghost shrink-0" onClick={() => setStep(1)}>Back</button>
-          </div>
-        )}
-        {msg && <p className={`text-sm mt-3 ${msg.ok ? "text-success" : "text-error"}`}>{msg.text}</p>}
-      </div>
-
-      <CodesCard />
-      <HttpsCard />
-
-      <div className="card">
-        <h3>Security</h3>
-        {authEnabled ? (
-          <div className="mt-2">
-            <p className="text-muted text-sm mb-3">Dashboard is password-protected.</p>
-            <button className="btn-secondary btn-sm" onClick={() => run(async () => { await api.disableAuth(); setAuthEnabled(false); }, "Password removed — dashboard is open.")}>Remove password</button>
-          </div>
-        ) : (
-          <div className="mt-2">
-            <p className="text-muted text-sm mb-3">No password — open on your network (fine for a home LAN).</p>
-            <div className="flex gap-2 max-w-sm">
-              <input className="input" type="password" placeholder="New password" value={newPw} onChange={(e) => setNewPw(e.target.value)} />
-              <button className="btn-secondary btn-sm shrink-0" onClick={() => run(async () => { await api.setPassword(newPw); setNewPw(""); setAuthEnabled(true); }, "Password set.")}>Set password</button>
+    <div className="px-6 py-8">
+      <div className="mx-auto w-full max-w-5xl">
+        <h2 className="mb-5">Account &amp; settings</h2>
+        {/* Multi-column masonry-ish grid: cards flow across columns; wide cards span both. */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
+          <div className="card">
+            <div className="flex items-center justify-between">
+              <h3>Jio account</h3>
+              <span className={`badge ${st?.loggedIn ? "badge-success" : "badge-error"}`}>{st?.loggedIn ? "Signed in" : "Not signed in"}</span>
+            </div>
+            <div className="grid grid-cols-2 gap-y-2 mt-4 text-sm">
+              <span className="text-muted">Mobile</span><span className="text-right">{st?.mobile || "—"}</span>
+              <span className="text-muted">Tokens updated</span><span className="text-right">{st?.updatedAt ? new Date(st.updatedAt).toLocaleString() : "—"}</span>
+            </div>
+            <div className="flex gap-2 mt-5">
+              <button className="btn-secondary btn-sm" onClick={() => run(api.refresh, "Tokens refreshed.")}><IconRefresh /> Refresh</button>
+              <button className="btn-ghost btn-sm" onClick={() => run(api.logoutJio, "Jio account signed out.")}>Sign out Jio</button>
             </div>
           </div>
-        )}
+
+          <div className="card">
+            <h3>Sign in to Jio</h3>
+            {step === 1 ? (
+              <div className="flex gap-2 mt-3">
+                <input className="input" inputMode="numeric" placeholder="10-digit mobile number" value={mobile} onChange={(e) => setMobile(e.target.value)} />
+                <button className="btn-primary shrink-0" onClick={() => run(async () => { await api.sendOtp(mobile); setStep(2); }, "OTP sent.")}>Send OTP</button>
+              </div>
+            ) : (
+              <div className="flex gap-2 mt-3">
+                <input className="input" inputMode="numeric" placeholder="Enter OTP" value={otp} onChange={(e) => setOtp(e.target.value)} />
+                <button className="btn-primary shrink-0" onClick={() => run(async () => { await api.verifyOtp(mobile, otp); setStep(1); setOtp(""); }, "Signed in — all TVs will pick this up.")}>Verify</button>
+                <button className="btn-ghost shrink-0" onClick={() => setStep(1)}>Back</button>
+              </div>
+            )}
+            {msg && <p className={`text-sm mt-3 ${msg.ok ? "text-success" : "text-error"}`}>{msg.text}</p>}
+          </div>
+
+          <div className="lg:col-span-2"><CodesCard /></div>
+          <HttpsCard />
+
+          <div className="card">
+            <h3>Security</h3>
+            {authEnabled ? (
+              <div className="mt-2">
+                <p className="text-muted text-sm mb-3">Dashboard is password-protected.</p>
+                <button className="btn-secondary btn-sm" onClick={() => run(async () => { await api.disableAuth(); setAuthEnabled(false); }, "Password removed — dashboard is open.")}>Remove password</button>
+              </div>
+            ) : (
+              <div className="mt-2">
+                <p className="text-muted text-sm mb-3">No password — open on your network (fine for a home LAN).</p>
+                <div className="flex gap-2">
+                  <input className="input" type="password" placeholder="New password" value={newPw} onChange={(e) => setNewPw(e.target.value)} />
+                  <button className="btn-secondary btn-sm shrink-0" onClick={() => run(async () => { await api.setPassword(newPw); setNewPw(""); setAuthEnabled(true); }, "Password set.")}>Set password</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -252,14 +262,14 @@ function Account() {
 /* ── TV access codes ───────────────────────────────────────────────────── */
 function CodesCard() {
   const [codes, setCodes] = useState<AccessCode[]>([]);
-  const [name, setName] = useState(""); const [manual, setManual] = useState(""); const [length, setLength] = useState(6);
+  const [name, setName] = useState(""); const [manual, setManual] = useState("");
   const [err, setErr] = useState(""); const [copied, setCopied] = useState<string | null>(null);
 
   const load = () => api.codes().then((r) => setCodes(r.codes)).catch(() => {});
   useEffect(() => { load(); }, []);
   const add = async () => {
     setErr("");
-    try { await api.addCode({ name: name || "TV", code: manual.trim() || undefined, length }); setName(""); setManual(""); load(); }
+    try { await api.addCode({ name: name || "TV", code: manual.trim() || undefined }); setName(""); setManual(""); load(); }
     catch (e: any) { setErr(e.message); }
   };
   const copy = async (code: string) => { try { await navigator.clipboard.writeText(code); setCopied(code); setTimeout(() => setCopied(null), 1500); } catch {} };
@@ -286,14 +296,9 @@ function CodesCard() {
         </table>
       )}
       <div className="flex flex-wrap items-end gap-2 mt-4">
-        <div className="grow min-w-[140px]"><label className="text-sm text-muted">Device name</label><input className="input mt-1" placeholder="e.g. Living Room TV" value={name} onChange={(e) => setName(e.target.value)} /></div>
-        <div className="w-32"><label className="text-sm text-muted">Custom code</label><input className="input mt-1 font-mono" placeholder="auto" value={manual} onChange={(e) => setManual(e.target.value)} /></div>
-        <div className="w-20"><label className="text-sm text-muted">Length</label>
-          <select className="input mt-1" value={length} onChange={(e) => setLength(Number(e.target.value))} disabled={!!manual.trim()}>
-            {[4, 5, 6, 7, 8, 10, 12].map((n) => <option key={n} value={n}>{n}</option>)}
-          </select>
-        </div>
-        <button className="btn-primary" onClick={add}><IconPlus /> Add code</button>
+        <div className="grow min-w-[160px]"><label className="text-sm text-muted">Device name</label><input className="input mt-1" placeholder="e.g. Living Room TV" value={name} onChange={(e) => setName(e.target.value)} /></div>
+        <div className="w-40"><label className="text-sm text-muted">Code (optional)</label><input className="input mt-1 font-mono" placeholder="auto-generate" value={manual} onChange={(e) => setManual(e.target.value)} /></div>
+        <button className="btn-primary" onClick={add}><IconPlus /> Add</button>
       </div>
       {err && <p className="text-error text-sm mt-2">{err}</p>}
     </div>
@@ -305,14 +310,13 @@ function HttpsCard() {
   const [info, setInfo] = useState<{ httpsPort: number; hasCert: boolean } | null>(null);
   const [msg, setMsg] = useState("");
   useEffect(() => { api.https().then(setInfo).catch(() => {}); }, []);
-  const host = location.hostname;
-  const url = info ? `https://${host}:${info.httpsPort}` : "";
+  const url = info ? `https://${location.hostname}:${info.httpsPort}` : "";
   return (
     <div className="card">
       <h3>HTTPS (for DRM channels)</h3>
       <p className="text-muted text-sm mt-1">
-        Encrypted DRM channels need a secure context in the browser. Open the HTTPS URL below and accept
-        the one-time “not private” warning (self-signed certificate).
+        Encrypted DRM channels need a secure context in the browser. Open the HTTPS URL and accept the
+        one-time “not private” warning (self-signed certificate).
       </p>
       {info && (
         <div className="flex items-center gap-2 mt-3">
@@ -320,9 +324,7 @@ function HttpsCard() {
           <a className="btn-secondary btn-sm shrink-0" href={url} target="_blank" rel="noreferrer">Open</a>
         </div>
       )}
-      <button className="btn-ghost btn-sm mt-3" onClick={() => api.regenerateHttps().then((r) => setMsg(r.note)).catch((e) => setMsg(e.message))}>
-        Regenerate certificate
-      </button>
+      <button className="btn-ghost btn-sm mt-3" onClick={() => api.regenerateHttps().then((r) => setMsg(r.note)).catch((e) => setMsg(e.message))}>Regenerate certificate</button>
       {msg && <p className="text-muted text-sm mt-2">{msg}</p>}
     </div>
   );
