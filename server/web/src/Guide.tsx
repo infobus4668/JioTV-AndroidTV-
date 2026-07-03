@@ -19,22 +19,22 @@ export function GuidePage() {
     api.favorites().then((r) => setFavs(new Set(r.ids))).catch(() => {});
   }, []);
 
-  const groups = useMemo(() => [FAV, ...Array.from(new Set((channels ?? []).map((c) => c.group))).sort()], [channels]);
+  const groups = useMemo(() => [FAV, "All", ...Array.from(new Set((channels ?? []).map((c) => c.group))).sort()], [channels]);
   const languages = useMemo(() => Array.from(new Set((channels ?? []).map((c) => c.language))).sort(), [channels]);
-  useEffect(() => { if (!group && groups.length) setGroup(favs.size ? FAV : groups[1] ?? groups[0]); }, [groups, favs]); // eslint-disable-line
+  useEffect(() => { if (!group) setGroup("All"); }, [group]);
 
   // Cap rows so we don't fire hundreds of EPG requests at once.
   const rows = useMemo(
     () => (channels ?? [])
       .filter((c) => langs.size === 0 || langs.has(c.language))
-      .filter((c) => (group === FAV ? favs.has(c.id) : c.group === group)).slice(0, 60),
+      .filter((c) => group === FAV ? favs.has(c.id) : group === "All" ? true : c.group === group).slice(0, 80),
     [channels, group, favs, langs]
   );
 
   if (!channels) return <div className="empty-state">Loading guide…</div>;
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
+    <div className="p-6">
       <div className="flex items-center justify-between mb-4">
         <h2>TV guide</h2>
         <LanguageMenu available={languages} langs={langs} onToggle={toggleLang} onClear={clearLangs} />
