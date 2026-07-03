@@ -13,6 +13,8 @@ import { config } from "../config";
 interface FileConfig {
   adminPasswordHash?: string;
   serverToken?: string;
+  // When true, the user explicitly chose "no password" — the dashboard and TV endpoints are open.
+  authDisabled?: boolean;
 }
 
 const file = path.join(config.dataDir, "config.json");
@@ -54,9 +56,21 @@ function eqConst(a: string, b: string): boolean {
   return ab.length === bb.length && timingSafeEqual(ab, bb);
 }
 
-/** True once an admin password exists (via env or the setup wizard). */
+/** True once setup is done — a password exists (env/file) OR the user chose "no password". */
 export function isAdminConfigured(): boolean {
-  return !!(config.adminPassword || load().adminPasswordHash);
+  const f = load();
+  return !!(config.adminPassword || f.adminPasswordHash || f.authDisabled);
+}
+
+/**
+ * Whether auth is actually enforced. An env ADMIN_PASSWORD always forces it on; otherwise it's on
+ * only when a file password exists and the user hasn't chosen "no password".
+ */
+export function isAuthEnabled(): boolean {
+  if (config.adminPassword) return true;
+  const f = load();
+  if (f.authDisabled) return false;
+  return !!f.adminPasswordHash;
 }
 
 export function verifyAdminPassword(pw: string): boolean {
@@ -65,9 +79,19 @@ export function verifyAdminPassword(pw: string): boolean {
   return h ? verifyHash(pw, h) : false;
 }
 
+/** Sets a password (turns auth ON). */
 export function setAdminPassword(pw: string): void {
   const c = load();
   c.adminPasswordHash = hashPassword(pw);
+  c.authDisabled = false;
+  save(c);
+}
+
+/** Turns auth OFF — open dashboard + open TV endpoint (home-LAN convenience). */
+export function disableAuth(): void {
+  const c = load();
+  c.authDisabled = true;
+  delete c.adminPasswordHash;
   save(c);
 }
 

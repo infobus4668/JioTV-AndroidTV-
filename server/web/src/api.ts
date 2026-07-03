@@ -35,8 +35,11 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   status: () => req<{ ok: boolean; hasCredentials: boolean }>("/api/status"),
-  setupState: () => req<{ needsSetup: boolean }>("/api/setup/state"),
-  setup: (password: string) => req<{ ok: boolean; serverToken: string }>("/api/setup", { method: "POST", body: JSON.stringify({ password }) }),
+  setupState: () => req<{ needsSetup: boolean; authEnabled: boolean }>("/api/setup/state"),
+  setup: (body: { password?: string; disableAuth?: boolean }) =>
+    req<{ ok: boolean; serverToken: string }>("/api/setup", { method: "POST", body: JSON.stringify(body) }),
+  setPassword: (password: string) => req("/api/admin/set-password", { method: "POST", body: JSON.stringify({ password }) }),
+  disableAuth: () => req("/api/admin/disable-auth", { method: "POST", body: "{}" }),
   adminConfig: () => req<{ serverToken: string }>("/api/admin/config"),
   adminStatus: () => req<{ loggedIn: boolean; mobile: string; updatedAt: number }>("/api/admin/status"),
   login: (password: string) => req("/api/admin/login", { method: "POST", body: JSON.stringify({ password }) }),

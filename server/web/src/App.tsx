@@ -4,16 +4,19 @@ import { Player } from "./Player";
 
 export default function App() {
   const [authed, setAuthed] = useState<boolean | null>(null);
-  const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
+  const [state, setState] = useState<{ needsSetup: boolean; authEnabled: boolean } | null>(null);
 
   useEffect(() => {
-    api.setupState().then((s) => setNeedsSetup(s.needsSetup)).catch(() => setNeedsSetup(false));
+    api.setupState().then(setState).catch(() => setState({ needsSetup: false, authEnabled: false }));
     api.adminStatus().then(() => setAuthed(true)).catch(() => setAuthed(false));
   }, []);
 
-  if (authed === null || needsSetup === null)
+  if (authed === null || state === null)
     return <div className="grid place-items-center h-full text-muted">Loading…</div>;
-  if (needsSetup && !authed) return <SetupWizard onDone={() => { setNeedsSetup(false); setAuthed(true); }} />;
+  if (state.needsSetup && !authed)
+    return <SetupWizard onDone={() => { setState({ needsSetup: false, authEnabled: true }); setAuthed(true); }} />;
+  // Auth off → open dashboard (no login gate).
+  if (!state.authEnabled) return <Shell onLogout={() => setAuthed(false)} />;
   if (!authed) return <Login onLogin={() => setAuthed(true)} />;
   return <Shell onLogout={() => setAuthed(false)} />;
 }
@@ -28,7 +31,12 @@ function SetupWizard({ onDone }: { onDone: () => void }) {
     if (pw.length < 4) return setErr("Use at least 4 characters.");
     if (pw !== pw2) return setErr("Passwords don’t match.");
     setBusy(true);
-    try { await api.setup(pw); onDone(); }
+    try { await api.setup({ password: pw }); onDone(); }
+    catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+  };
+  const skip = async () => {
+    setErr(""); setBusy(true);
+    try { await api.setup({ disableAuth: true }); onDone(); }
     catch (e: any) { setErr(e.message); } finally { setBusy(false); }
   };
   return (
@@ -45,6 +53,11 @@ function SetupWizard({ onDone }: { onDone: () => void }) {
         <button className="btn-primary w-full mt-4" disabled={busy} onClick={submit}>
           {busy ? "Creating…" : "Create & continue"}
         </button>
+        <button className="btn-ghost w-full mt-2" disabled={busy} onClick={skip}>
+          Continue without a password
+        </button>
+        <p className="text-muted text-[11px] mt-2">No password = open dashboard on your network. Fine
+          for a home LAN; don’t expose the server to the internet without one.</p>
         {err && <div className="text-danger text-sm mt-3">{err}</div>}
       </div>
     </div>
@@ -177,11 +190,14 @@ function Account() {
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [token, setToken] = useState("");
   const [copied, setCopied] = useState(false);
+  const [authEnabled, setAuthEnabled] = useState(false);
+  const [newPw, setNewPw] = useState("");
 
   const refresh = () => api.adminStatus().then(setSt).catch(() => {});
   useEffect(() => {
     refresh();
     api.adminConfig().then((r) => setToken(r.serverToken)).catch(() => {});
+    api.setupState().then((s) => setAuthEnabled(s.authEnabled)).catch(() => {});
   }, []);
 
   const run = async (fn: () => Promise<unknown>, okText: string) => {
@@ -249,6 +265,30 @@ function Account() {
             try { await navigator.clipboard.writeText(token); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch {}
           }}>{copied ? "Copied ✓" : "Copy"}</button>
         </div>
+      </div>
+
+      <div className="card p-5 mt-4">
+        <h3 className="font-semibold mb-1">Security</h3>
+        {authEnabled ? (
+          <>
+            <p className="text-muted text-xs mb-3">Dashboard is password-protected.</p>
+            <button className="btn-ghost" onClick={() =>
+              run(async () => { await api.disableAuth(); setAuthEnabled(false); }, "Password removed — dashboard is now open.")}>
+              Remove password
+            </button>
+          </>
+        ) : (
+          <>
+            <p className="text-muted text-xs mb-3">No password — open on your network (fine for a home LAN).</p>
+            <div className="flex gap-2">
+              <input className="input" type="password" placeholder="New password" value={newPw} onChange={(e) => setNewPw(e.target.value)} />
+              <button className="btn-ghost shrink-0" onClick={() =>
+                run(async () => { await api.setPassword(newPw); setNewPw(""); setAuthEnabled(true); }, "Password set.")}>
+                Set password
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       <p className="text-muted text-xs mt-6 leading-relaxed">

@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { sendOtp, verifyOtp } from "../jio/auth";
 import { getStoredCredentials, saveCredentials, clearCredentials } from "../store/db";
 import {
-  isAdminConfigured, verifyAdminPassword, setAdminPassword, ensureServerToken,
+  isAdminConfigured, isAuthEnabled, verifyAdminPassword, setAdminPassword, disableAuth, ensureServerToken,
 } from "../store/settings";
 import { refreshNow } from "../refresh";
 import { sessions, requireAdmin, requireServerToken } from "./auth";
@@ -22,20 +22,43 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ── First-run setup (browser, no .env needed) ──
-  // Tells the SPA whether to show the "create admin password" wizard or the login screen.
-  app.get("/api/setup/state", async () => ({ needsSetup: !isAdminConfigured() }));
+  // Tells the SPA whether to show the setup wizard, and whether login is required.
+  app.get("/api/setup/state", async () => ({
+    needsSetup: !isAdminConfigured(),
+    authEnabled: isAuthEnabled(),
+  }));
 
-  // Only allowed while no admin password exists. Sets it, generates the TV token, logs the user in.
+  // First run only. Either set a password, or choose "no password" (disableAuth) for an open LAN box.
   app.post("/api/setup", async (req, reply) => {
     if (isAdminConfigured()) return reply.code(403).send({ error: "Already set up" });
+    const { password, disableAuth: noAuth } = (req.body ?? {}) as { password?: string; disableAuth?: boolean };
+    if (noAuth) {
+      disableAuth();
+    } else {
+      if (!password || password.length < 4) {
+        return reply.code(400).send({ error: "Choose a password of at least 4 characters (or pick no password)" });
+      }
+      setAdminPassword(password);
+    }
+    const serverToken = ensureServerToken();
+    startSession(reply);
+    return { ok: true, serverToken };
+  });
+
+  // Toggle auth later from the dashboard.
+  app.post("/api/admin/set-password", { preHandler: requireAdmin }, async (req, reply) => {
     const { password } = (req.body ?? {}) as { password?: string };
     if (!password || password.length < 4) {
       return reply.code(400).send({ error: "Choose a password of at least 4 characters" });
     }
     setAdminPassword(password);
-    const serverToken = ensureServerToken();
-    startSession(reply);
-    return { ok: true, serverToken };
+    startSession(reply); // keep the current browser signed in under the new password
+    return { ok: true };
+  });
+
+  app.post("/api/admin/disable-auth", { preHandler: requireAdmin }, async () => {
+    disableAuth();
+    return { ok: true };
   });
 
   // ── Admin auth ──
