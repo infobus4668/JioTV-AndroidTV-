@@ -163,10 +163,11 @@ function Channels() {
             {filtered.map((c) => (
               <div key={c.id} className="relative group">
                 <button onClick={() => nav(`/watch/${c.id}`, { state: { name: c.name } })}
-                  className="card card-hover w-full !p-4 flex flex-col items-center gap-3 aspect-[4/5] justify-center">
+                  className="card card-hover w-full !p-4 flex flex-col items-center gap-2 aspect-[4/5] justify-center">
                   <img src={c.logoUrl} alt="" className="h-16 w-16 rounded-full object-cover bg-surface-2"
                     onError={(e) => ((e.target as HTMLImageElement).style.visibility = "hidden")} />
                   <div className="text-sm text-center leading-snug line-clamp-2">{c.name}</div>
+                  <div className="text-subtle text-xs text-center line-clamp-1">{c.group}</div>
                 </button>
                 <button onClick={() => toggleFav(c.id)} title="Favourite"
                   className={`absolute top-2 right-2 ${favs.has(c.id) ? "text-accent" : "text-subtle opacity-0 group-hover:opacity-100"} transition-opacity`}>

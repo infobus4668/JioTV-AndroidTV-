@@ -23,7 +23,8 @@
 }
 
 @layer components {
-  .btn {
+  /* Every variant includes the base layout so `btn-primary` alone is a complete button. */
+  :is(.btn, .btn-primary, .btn-secondary, .btn-ghost, .btn-danger) {
     --btn-h: 36px;
     display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
     height: var(--btn-h); padding: 0 var(--space-4);
@@ -34,8 +35,8 @@
     transition: background var(--duration-1) var(--ease-out), border-color var(--duration-1) var(--ease-out),
                 color var(--duration-1) var(--ease-out), opacity var(--duration-1) var(--ease-out);
   }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn svg { width: 16px; height: 16px; }
+  :is(.btn, .btn-primary, .btn-secondary, .btn-ghost, .btn-danger):disabled { opacity: 0.5; cursor: not-allowed; }
+  :is(.btn, .btn-primary, .btn-secondary, .btn-ghost, .btn-danger) svg { width: 16px; height: 16px; flex: none; }
   .btn-primary { background: var(--primary); color: var(--primary-foreground); }
   .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
   .btn-secondary { background: var(--surface-2); color: var(--foreground); border-color: var(--border-strong); }
