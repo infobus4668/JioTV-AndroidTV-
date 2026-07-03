@@ -12,17 +12,18 @@ const REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000; // every 6 hours
 
 let timer: NodeJS.Timeout | null = null;
 
-export async function refreshNow(): Promise<boolean> {
+export async function refreshNow(): Promise<{ ok: boolean; error?: string }> {
   const stored = getStoredCredentials();
-  if (!stored) return false;
+  if (!stored) return { ok: false, error: "No credentials — sign in to Jio first." };
   try {
     const updated = await refreshTokens(stored);
     updateTokens(updated, Date.now());
     console.log("[refresh] tokens refreshed");
-    return true;
+    return { ok: true };
   } catch (err) {
-    console.warn("[refresh] failed:", (err as Error).message);
-    return false;
+    const error = (err as Error).message;
+    console.warn("[refresh] failed:", error);
+    return { ok: false, error };
   }
 }
 

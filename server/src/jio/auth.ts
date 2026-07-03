@@ -65,6 +65,8 @@ export async function verifyOtp(mobile: string, otp: string): Promise<AuthData> 
   return {
     ssoToken: json.ssoToken ?? "",
     authToken: json.authToken ?? "",
+    // Separate from authToken — required by the refreshtoken endpoint.
+    refreshToken: json.refreshToken ?? "",
     crmid: user.subscriberId ?? "",
     uniqueId: user.unique ?? "",
     deviceId: json.deviceId ?? "",

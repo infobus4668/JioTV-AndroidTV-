@@ -160,8 +160,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post("/api/admin/refresh", { preHandler: requireAdmin }, async (_req, reply) => {
-    const ok = await refreshNow();
-    if (!ok) return reply.code(400).send({ error: "Refresh failed or no credentials" });
+    const r = await refreshNow();
+    if (!r.ok) return reply.code(400).send({ error: r.error ?? "Refresh failed" });
     return { ok: true };
   });
 

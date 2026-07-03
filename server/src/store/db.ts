@@ -35,6 +35,9 @@ db.exec(`
   );
 `);
 
+// Migration: add refreshToken to existing credential stores (required by the refresh endpoint).
+try { db.exec("ALTER TABLE credentials ADD COLUMN refreshToken TEXT"); } catch { /* already exists */ }
+
 export interface StoredCredentials extends AuthData {
   mobile: string;
   updatedAt: number;
@@ -42,12 +45,12 @@ export interface StoredCredentials extends AuthData {
 
 const selectStmt = db.prepare("SELECT * FROM credentials WHERE id = 1");
 const upsertStmt = db.prepare(`
-  INSERT INTO credentials (id, mobile, ssoToken, authToken, crmid, uniqueId, deviceId, userId, updated_at)
-  VALUES (1, @mobile, @ssoToken, @authToken, @crmid, @uniqueId, @deviceId, @userId, @updatedAt)
+  INSERT INTO credentials (id, mobile, ssoToken, authToken, refreshToken, crmid, uniqueId, deviceId, userId, updated_at)
+  VALUES (1, @mobile, @ssoToken, @authToken, @refreshToken, @crmid, @uniqueId, @deviceId, @userId, @updatedAt)
   ON CONFLICT(id) DO UPDATE SET
     mobile=excluded.mobile, ssoToken=excluded.ssoToken, authToken=excluded.authToken,
-    crmid=excluded.crmid, uniqueId=excluded.uniqueId, deviceId=excluded.deviceId,
-    userId=excluded.userId, updated_at=excluded.updated_at
+    refreshToken=excluded.refreshToken, crmid=excluded.crmid, uniqueId=excluded.uniqueId,
+    deviceId=excluded.deviceId, userId=excluded.userId, updated_at=excluded.updated_at
 `);
 const clearStmt = db.prepare("DELETE FROM credentials WHERE id = 1");
 
@@ -58,6 +61,7 @@ export function getStoredCredentials(): StoredCredentials | null {
     mobile: row.mobile ?? "",
     ssoToken: row.ssoToken ?? "",
     authToken: row.authToken ?? "",
+    refreshToken: row.refreshToken ?? "",
     crmid: row.crmid ?? "",
     uniqueId: row.uniqueId ?? "",
     deviceId: row.deviceId ?? "",

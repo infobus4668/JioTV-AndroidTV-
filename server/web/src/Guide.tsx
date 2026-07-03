@@ -39,10 +39,12 @@ export function GuidePage() {
         <h2>TV guide</h2>
         <LanguageMenu available={languages} langs={langs} onToggle={toggleLang} onClear={clearLangs} />
       </div>
-      <div className="tabs flex-wrap mb-4">
-        {groups.map((g) => (
-          <button key={g} className={`tab ${group === g ? "active" : ""}`} onClick={() => setGroup(g)}>{g}</button>
-        ))}
+      <div className="mb-4 overflow-x-auto pb-1">
+        <div className="tabs w-max">
+          {groups.map((g) => (
+            <button key={g} className={`tab whitespace-nowrap ${group === g ? "active" : ""}`} onClick={() => setGroup(g)}>{g}</button>
+          ))}
+        </div>
       </div>
       {rows.length === 0 ? (
         <div className="empty-state">{group === FAV ? "No favourites yet." : "No channels here."}</div>
