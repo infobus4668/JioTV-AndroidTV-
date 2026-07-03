@@ -23,7 +23,14 @@ async function buildApp(extra?: Record<string, unknown>): Promise<FastifyInstanc
   await registerPlayRoutes(app);
 
   const webRoot = path.join(__dirname, "..", "web", "dist");
-  await app.register(fastifyStatic, { root: webRoot, prefix: "/" });
+  await app.register(fastifyStatic, {
+    root: webRoot,
+    prefix: "/",
+    // Hashed assets can cache forever; index.html must never cache so a rebuild is picked up.
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith(".html")) res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    },
+  });
 
   // SPA fallback: any non-API route serves index.html so client routing works.
   app.setNotFoundHandler((req, reply) => {
