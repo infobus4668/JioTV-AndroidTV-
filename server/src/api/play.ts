@@ -1,8 +1,9 @@
 import { Readable } from "node:stream";
 import type { FastifyInstance } from "fastify";
-import { requireAdmin } from "./auth";
+import { requireAdmin, requireServerToken } from "./auth";
 import { getChannels } from "../jio/channels";
 import { getNativeEpg } from "../jio/epg";
+import { getFavorites, toggleFavorite, setFavorites } from "../store/db";
 import { getPlaybackInfo, proxyUpstream, proxyLicense, rewriteManifest } from "../proxy/streamProxy";
 
 /**
@@ -18,6 +19,26 @@ export async function registerPlayRoutes(app: FastifyInstance): Promise<void> {
     "/api/epg/:id",
     { preHandler: requireAdmin },
     async (req) => ({ programs: await getNativeEpg(req.params.id) })
+  );
+
+  // ── Favorites (shared across TVs + web player) ──
+  // Web player (admin session):
+  app.get("/api/favorites", { preHandler: requireAdmin }, async () => ({ ids: getFavorites() }));
+  app.post<{ Params: { id: string } }>(
+    "/api/favorites/:id/toggle",
+    { preHandler: requireAdmin },
+    async (req) => ({ favorited: toggleFavorite(req.params.id) })
+  );
+  // TVs (bearer token) — pull the shared set, or replace it with the TV's local set:
+  app.get("/api/tv/favorites", { preHandler: requireServerToken }, async () => ({ ids: getFavorites() }));
+  app.put<{ Body: { ids?: string[] } }>(
+    "/api/tv/favorites",
+    { preHandler: requireServerToken },
+    async (req) => {
+      const ids = Array.isArray(req.body?.ids) ? req.body!.ids!.map(String) : [];
+      setFavorites(ids);
+      return { ids: getFavorites() };
+    }
   );
 
   // Manifest URL + DRM flags the player feeds to Shaka.

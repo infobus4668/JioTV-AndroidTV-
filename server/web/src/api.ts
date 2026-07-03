@@ -46,4 +46,7 @@ export const api = {
   channels: () => req<{ channels: Channel[] }>("/api/channels"),
   playInfo: (id: string) => req<PlaybackInfo>(`/api/play/${encodeURIComponent(id)}`),
   epg: (id: string) => req<{ programs: EpgProgram[] }>(`/api/epg/${encodeURIComponent(id)}`),
+  favorites: () => req<{ ids: string[] }>("/api/favorites"),
+  toggleFavorite: (id: string) =>
+    req<{ favorited: boolean }>(`/api/favorites/${encodeURIComponent(id)}/toggle`, { method: "POST", body: "{}" }),
 };

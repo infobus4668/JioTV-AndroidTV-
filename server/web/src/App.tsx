@@ -70,13 +70,28 @@ function Channels() {
   const [group, setGroup] = useState<string>("All");
   const [q, setQ] = useState("");
   const [playing, setPlaying] = useState<Channel | null>(null);
+  const [favs, setFavs] = useState<Set<string>>(new Set());
+  const FAV = "★ Favorites";
 
-  useEffect(() => { api.channels().then((r) => setChannels(r.channels)).catch((e) => setErr(e.message)); }, []);
+  useEffect(() => {
+    api.channels().then((r) => setChannels(r.channels)).catch((e) => setErr(e.message));
+    api.favorites().then((r) => setFavs(new Set(r.ids))).catch(() => {});
+  }, []);
 
-  const groups = useMemo(() => ["All", ...Array.from(new Set((channels ?? []).map((c) => c.group))).sort()], [channels]);
+  const toggleFav = async (id: string) => {
+    const next = new Set(favs);
+    next.has(id) ? next.delete(id) : next.add(id); // optimistic
+    setFavs(next);
+    try { await api.toggleFavorite(id); } catch { setFavs(favs); }
+  };
+
+  const groups = useMemo(
+    () => [FAV, "All", ...Array.from(new Set((channels ?? []).map((c) => c.group))).sort()],
+    [channels]
+  );
   const filtered = useMemo(() => (channels ?? [])
-    .filter((c) => group === "All" || c.group === group)
-    .filter((c) => c.name.toLowerCase().includes(q.toLowerCase())), [channels, group, q]);
+    .filter((c) => group === FAV ? favs.has(c.id) : group === "All" || c.group === group)
+    .filter((c) => c.name.toLowerCase().includes(q.toLowerCase())), [channels, group, q, favs]);
 
   if (err) return <div className="p-8 text-danger">Couldn’t load channels: {err}</div>;
   if (!channels) return <div className="p-8 text-muted">Loading channels…</div>;
@@ -95,13 +110,19 @@ function Channels() {
         <input className="input mb-4 max-w-sm" placeholder="Search channels…" value={q} onChange={(e) => setQ(e.target.value)} />
         <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))" }}>
           {filtered.map((c) => (
-            <button key={c.id} onClick={() => setPlaying(c)}
-              className="card p-3 flex flex-col items-center gap-2 hover:border-primary transition-colors focus:outline-none focus:ring-2 focus:ring-primary">
-              <img src={c.logoUrl} alt="" className="h-14 w-14 rounded-full object-cover bg-surface2"
-                onError={(e) => ((e.target as HTMLImageElement).style.visibility = "hidden")} />
-              <div className="text-xs text-center line-clamp-2">{c.name}</div>
-              <span className="pill bg-live/15 text-live text-[10px]">LIVE</span>
-            </button>
+            <div key={c.id} className="relative">
+              <button onClick={() => setPlaying(c)}
+                className="card w-full p-3 flex flex-col items-center gap-2 hover:border-primary transition-colors focus:outline-none focus:ring-2 focus:ring-primary">
+                <img src={c.logoUrl} alt="" className="h-14 w-14 rounded-full object-cover bg-surface2"
+                  onError={(e) => ((e.target as HTMLImageElement).style.visibility = "hidden")} />
+                <div className="text-xs text-center line-clamp-2">{c.name}</div>
+                <span className="pill bg-live/15 text-live text-[10px]">LIVE</span>
+              </button>
+              <button onClick={() => toggleFav(c.id)} title="Toggle favorite"
+                className={`absolute top-1.5 right-1.5 text-lg leading-none ${favs.has(c.id) ? "text-yellow-400" : "text-muted hover:text-text"}`}>
+                {favs.has(c.id) ? "★" : "☆"}
+              </button>
+            </div>
           ))}
         </div>
         {filtered.length === 0 && <div className="text-muted mt-8">No channels match.</div>}

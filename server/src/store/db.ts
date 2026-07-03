@@ -25,6 +25,9 @@ db.exec(`
     userId       TEXT,
     updated_at   INTEGER
   );
+  CREATE TABLE IF NOT EXISTS favorites (
+    channel_id TEXT PRIMARY KEY
+  );
 `);
 
 export interface StoredCredentials extends AuthData {
@@ -71,4 +74,33 @@ export function updateTokens(auth: AuthData, nowMs: number): void {
 
 export function clearCredentials(): void {
   clearStmt.run();
+}
+
+// ── Favorites (shared across all TVs + the web player) ──
+const favAll = db.prepare("SELECT channel_id FROM favorites");
+const favHas = db.prepare("SELECT 1 FROM favorites WHERE channel_id = ?");
+const favAdd = db.prepare("INSERT OR IGNORE INTO favorites (channel_id) VALUES (?)");
+const favDel = db.prepare("DELETE FROM favorites WHERE channel_id = ?");
+
+export function getFavorites(): string[] {
+  return (favAll.all() as Array<{ channel_id: string }>).map((r) => r.channel_id);
+}
+
+/** Toggles a favorite and returns the new state (true = now favorited). */
+export function toggleFavorite(channelId: string): boolean {
+  if (favHas.get(channelId)) {
+    favDel.run(channelId);
+    return false;
+  }
+  favAdd.run(channelId);
+  return true;
+}
+
+/** Replaces the whole favorites set (used by a TV pushing its local set up). */
+export function setFavorites(ids: string[]): void {
+  const tx = db.transaction((list: string[]) => {
+    db.prepare("DELETE FROM favorites").run();
+    for (const id of list) favAdd.run(id);
+  });
+  tx(ids);
 }
