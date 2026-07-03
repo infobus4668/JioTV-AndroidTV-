@@ -73,7 +73,7 @@ export async function registerPlayRoutes(app: FastifyInstance): Promise<void> {
           /\.(mpd|m3u8)(\?|$)/i.test(target);
         if (looksManifest) {
           const text = await upstream.text();
-          const rewritten = rewriteManifest(text, contentType, target, cid);
+          const rewritten = rewriteManifest(text, contentType, target, `/api/proxy?cid=${encodeURIComponent(cid)}&u=`);
           reply.code(upstream.status);
           if (contentType) reply.header("content-type", contentType);
           return reply.send(rewritten ?? text);

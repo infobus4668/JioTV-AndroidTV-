@@ -70,13 +70,26 @@ export async function getStreamData(
   if (res.status < 200 || res.status >= 300) throw new Error(`geturl failed (HTTP ${res.status})`);
   const json = JSON.parse(res.text) as any;
 
-  let streamUrl: string = json.result ?? "";
+  // Jio often returns BOTH a plain HLS (`result`) and a DRM DASH (`mpd`). Prefer the non-DRM HLS —
+  // it plays in a browser with no HTTPS and no Widevine. Fall back to DRM DASH only when there's no
+  // HLS. (The Android TV app keeps its own MPD-first logic; this only affects the web player/proxy.)
+  const hls = (json.result ?? "").trim();
   const mpd = json.mpd;
-  const isMpd = !!(mpd && mpd.result);
+  const hasMpd = !!(mpd && mpd.result);
+  const paywall = (u: string) => /paywall|fallback/i.test(u);
+  const hlsIsReal = !!hls && !paywall(hls);
+  let streamUrl: string;
+  let isMpd: boolean;
   let licenseUrl = "";
-  if (isMpd) {
-    streamUrl = mpd.result ?? "";
-    licenseUrl = mpd.key ?? "";
+  if (hlsIsReal) {
+    // Real non-DRM HLS — plays in a browser with no HTTPS/Widevine.
+    streamUrl = hls; isMpd = false;
+  } else if (hasMpd) {
+    // No usable HLS but a real DASH stream (usually DRM). Needs HTTPS + Widevine (L1 on TV).
+    streamUrl = mpd.result ?? ""; isMpd = true; licenseUrl = mpd.key ?? "";
+  } else {
+    // Only a paywall/fallback HLS (or nothing) — surfaces the "not in your plan" message.
+    streamUrl = hls; isMpd = false;
   }
 
   let cookieStr = "";

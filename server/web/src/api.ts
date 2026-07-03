@@ -5,6 +5,7 @@ export interface Channel {
   name: string;
   logoUrl: string;
   group: string;
+  language: string;
   isDrm: boolean;
   channelNumber: number;
 }

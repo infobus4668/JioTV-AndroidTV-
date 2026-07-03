@@ -102,13 +102,13 @@ export function rewriteManifest(
   body: string,
   contentType: string,
   requestedUrl: string,
-  channelId: string
+  segPrefix: string
 ): string | null {
   const ct = contentType.toLowerCase();
   const isMpd = ct.includes("dash+xml") || body.trimStart().startsWith("<");
   const isHls = ct.includes("mpegurl") || body.trimStart().startsWith("#EXTM3U");
   const baseDir = requestedUrl.slice(0, requestedUrl.lastIndexOf("/") + 1);
-  const proxyPrefix = `/api/proxy?cid=${encodeURIComponent(channelId)}&u=`;
+  const proxyPrefix = segPrefix; // caller supplies the full prefix ending in "u="
 
   if (isMpd) {
     if (/<BaseURL>\s*https?:\/\//i.test(body)) return body; // already absolute

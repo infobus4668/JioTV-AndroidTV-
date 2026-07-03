@@ -5,9 +5,18 @@ export interface Channel {
   name: string;
   logoUrl: string;
   group: string;
+  language: string;
   isDrm: boolean;
   channelNumber: number;
 }
+
+// JioTV language-id → name (well-known ids).
+const JIO_LANG: Record<string, string> = {
+  "1": "Hindi", "2": "Marathi", "3": "Punjabi", "4": "Urdu", "5": "Tamil", "6": "English",
+  "7": "Malayalam", "8": "Telugu", "9": "Bengali", "10": "Kannada", "11": "Oriya",
+  "12": "Gujarati", "13": "Assamese", "14": "Nepali", "15": "French", "16": "Bhojpuri",
+  "17": "Kokborok", "18": "Odia", "19": "Rajasthani", "23": "Arabic",
+};
 
 const CHANNEL_TTL_MS = 24 * 60 * 60 * 1000;
 let cache: { at: number; channels: Channel[] } | null = null;
@@ -40,6 +49,7 @@ async function fetchChannelPage(url: string, categoryMap: Record<string, string>
         name: c.channel_name || "Unknown",
         logoUrl: `https://jiotvimages.cdn.jio.com/dare_images/images/${c.logoUrl ?? ""}`,
         group: categoryMap[String(c.channelCategoryId)] ?? "Other",
+        language: JIO_LANG[String(c.channelLanguageId)] ?? "Other",
         isDrm: true,
         channelNumber: id,
       });

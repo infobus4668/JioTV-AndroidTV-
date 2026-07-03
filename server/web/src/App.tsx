@@ -2,10 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { Routes, Route, Navigate, NavLink, Outlet, useNavigate } from "react-router-dom";
 import { api, type AccessCode, type Channel } from "./api";
 import { WatchPage } from "./Player";
+import { GuidePage } from "./Guide";
 import {
   IconTv, IconUser, IconLogOut, IconSun, IconMoon, IconStar, IconSearch,
-  IconCopy, IconPlus, IconTrash, IconRefresh, IconCheck,
+  IconCopy, IconPlus, IconTrash, IconRefresh, IconCheck, IconGuide, categoryIcon,
 } from "./Icons";
+import { useLangFilter, LanguageMenu } from "./lang";
 
 /* ── theme ─────────────────────────────────────────────────────────────── */
 function useTheme() {
@@ -42,6 +44,7 @@ export default function App() {
       <Route element={<Layout onLogout={() => setAuthed(false)} />}>
         <Route index element={<Navigate to="/channels" replace />} />
         <Route path="channels" element={<Channels />} />
+        <Route path="guide" element={<GuidePage />} />
         <Route path="watch/:id" element={<WatchPage />} />
         <Route path="account" element={<Account />} />
         <Route path="*" element={<Navigate to="/channels" replace />} />
@@ -99,9 +102,13 @@ function Layout({ onLogout }: { onLogout: () => void }) {
   return (
     <div className="h-full flex flex-col">
       <header className="flex items-center gap-4 px-5 h-14 border-b border-border shrink-0">
-        <div className="flex items-center gap-2 font-semibold"><IconTv className="text-accent" /> JTV Server</div>
+        <div className="flex items-center gap-2">
+          <span className="grid place-items-center w-7 h-7 rounded-md bg-accent text-white"><IconTv size={16} /></span>
+          <span className="font-semibold tracking-tight">JTV<span className="text-muted font-normal"> Server</span></span>
+        </div>
         <nav className="tabs ml-2">
           <NavLink to="/channels" className={link}><IconTv size={15} /> Channels</NavLink>
+          <NavLink to="/guide" className={link}><IconGuide size={15} /> Guide</NavLink>
           <NavLink to="/account" className={link}><IconUser size={15} /> Account</NavLink>
         </nav>
         <div className="ml-auto flex items-center gap-2">
@@ -120,6 +127,7 @@ function Channels() {
   const [channels, setChannels] = useState<Channel[] | null>(null);
   const [err, setErr] = useState(""); const [group, setGroup] = useState("All");
   const [q, setQ] = useState(""); const [favs, setFavs] = useState<Set<string>>(new Set());
+  const [langs, toggleLang, clearLangs] = useLangFilter();
   const FAV = "Favorites";
 
   useEffect(() => {
@@ -132,9 +140,11 @@ function Channels() {
     try { await api.toggleFavorite(id); } catch { setFavs(favs); }
   };
   const groups = useMemo(() => [FAV, "All", ...Array.from(new Set((channels ?? []).map((c) => c.group))).sort()], [channels]);
+  const languages = useMemo(() => Array.from(new Set((channels ?? []).map((c) => c.language))).sort(), [channels]);
   const filtered = useMemo(() => (channels ?? [])
+    .filter((c) => langs.size === 0 || langs.has(c.language))
     .filter((c) => group === FAV ? favs.has(c.id) : group === "All" || c.group === group)
-    .filter((c) => c.name.toLowerCase().includes(q.toLowerCase())), [channels, group, q, favs]);
+    .filter((c) => c.name.toLowerCase().includes(q.toLowerCase())), [channels, group, q, favs, langs]);
 
   if (err) return <div className="empty-state">Couldn’t load channels: {err}</div>;
   if (!channels) return <div className="empty-state">Loading channels…</div>;
@@ -142,19 +152,25 @@ function Channels() {
   return (
     <div className="flex h-full min-h-0">
       <aside className="w-52 shrink-0 border-r border-border overflow-y-auto py-3 px-2">
-        {groups.map((g) => (
-          <button key={g} onClick={() => setGroup(g)}
-            className={`flex items-center gap-2 w-full text-left px-3 py-2 rounded-md text-sm truncate transition-colors ${group === g ? "bg-surface-2 text-fg" : "text-muted hover:text-fg hover:bg-surface-hover"}`}>
-            {g === FAV && <IconStar size={14} filled={group === g} />}{g}
-          </button>
-        ))}
+        {groups.map((g) => {
+          const Ico = g === FAV ? null : categoryIcon(g);
+          const active = group === g;
+          return (
+            <button key={g} onClick={() => setGroup(g)}
+              className={`flex items-center gap-2.5 w-full text-left px-3 py-2 rounded-md text-sm truncate transition-colors ${active ? "bg-surface-2 text-fg" : "text-muted hover:text-fg hover:bg-surface-hover"}`}>
+              {g === FAV ? <IconStar size={15} filled={active} className="shrink-0" /> : Ico && <Ico size={15} className="shrink-0 opacity-80" />}
+              <span className="truncate">{g}</span>
+            </button>
+          );
+        })}
       </aside>
       <section className="flex-1 min-w-0 overflow-y-auto">
-        <div className="sticky top-0 z-10 bg-bg/95 backdrop-blur px-6 py-4 border-b border-border">
-          <div className="relative max-w-sm">
+        <div className="sticky top-0 z-10 bg-bg/95 backdrop-blur px-6 py-4 border-b border-border flex items-center gap-3">
+          <div className="relative flex-1 max-w-sm">
             <IconSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-subtle" size={16} />
             <input className="input pl-9" placeholder="Search channels…" value={q} onChange={(e) => setQ(e.target.value)} />
           </div>
+          <LanguageMenu available={languages} langs={langs} onToggle={toggleLang} onClear={clearLangs} />
         </div>
         {filtered.length === 0 ? (
           <div className="empty-state">{group === FAV ? "No favourites yet — hover a channel and tap the star." : "No channels match."}</div>
