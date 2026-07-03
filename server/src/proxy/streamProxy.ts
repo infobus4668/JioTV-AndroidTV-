@@ -144,8 +144,8 @@ export function rewriteManifest(
 /** The real manifest URL + DRM flags the web player needs to configure Shaka. `key` is the cid. */
 export async function getPlaybackInfo(key: string) {
   const c = await getStream(key);
-  // Jio returns a ".../PayWall/Fallback/..." URL for channels the account isn't subscribed to.
-  const entitled = !/paywall|fallback/i.test(c.data.streamUrl);
+  // "PayWall" in the URL = not subscribed. (A plain "Fallback" is a real non-DRM stream — entitled.)
+  const entitled = !/paywall/i.test(c.data.streamUrl);
   return {
     channelId: key,
     isMpd: c.data.isMpd,

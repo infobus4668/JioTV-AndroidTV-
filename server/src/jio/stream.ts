@@ -76,7 +76,9 @@ export async function getStreamData(
   const hls = (json.result ?? "").trim();
   const mpd = json.mpd;
   const hasMpd = !!(mpd && mpd.result);
-  const paywall = (u: string) => /paywall|fallback/i.test(u);
+  // "PayWall" = not subscribed (dead). A plain "Fallback" HLS is the real NON-DRM stream that plays
+  // over HTTP without Widevine — so we must NOT reject it (that was the bug that forced DRM DASH).
+  const paywall = (u: string) => /paywall/i.test(u);
   const hlsIsReal = !!hls && !paywall(hls);
   let streamUrl: string;
   let isMpd: boolean;
