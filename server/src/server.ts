@@ -5,6 +5,7 @@ import fastifyStatic from "@fastify/static";
 import { config } from "./config";
 import { registerRoutes } from "./api/routes";
 import { registerPlayRoutes } from "./api/play";
+import { registerPlaylistRoutes } from "./api/playlist";
 import { startRefreshScheduler } from "./refresh";
 import { isAdminConfigured } from "./store/settings";
 import { ensureCert } from "./https";
@@ -21,6 +22,7 @@ async function buildApp(extra?: Record<string, unknown>): Promise<FastifyInstanc
   await app.register(cookie);
   await registerRoutes(app);
   await registerPlayRoutes(app);
+  await registerPlaylistRoutes(app);
 
   const webRoot = path.join(__dirname, "..", "web", "dist");
   await app.register(fastifyStatic, {

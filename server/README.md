@@ -1,29 +1,26 @@
 # JTV Server (companion)
 
-Self-hostable **credential broker + streaming proxy + web player** for the JTV Android TV app.
+Self-hostable **credential broker + streaming proxy + web player + M3U provider** for the JTV
+Android TV app — and a full JioTV experience in any browser.
 
-- **Log in once, everywhere** — stores your Jio login and refreshes tokens centrally; every TV pulls current credentials instead of logging in separately.
-- **Watch in the browser** *(Phase 2)* — proxies channels (incl. DRM/Widevine via a license proxy) with a web UI and local playback.
-- **Self-host** — single Docker image (Node/TypeScript API + web UI), one `docker compose up`.
+- **Log in once, everywhere** — stores your Jio login and refreshes the tokens centrally; every TV
+  pulls current credentials instead of logging in separately. Re-login only ever happens on the server.
+- **Watch in the browser** — a built-in web player streams channels through the server (fresh token
+  injected server-side), with a channel grid, TV guide, catch-up, favourites and a language filter.
+- **Use any IPTV player** — generate an **M3U playlist** (with EPG + catch-up) for VLC, TiviMate,
+  OTT Navigator, Kodi, …
+- **Self-host** — one Docker image (Node/TypeScript API + React web UI), `docker compose up`.
 
-## Status
+## Playback: what works where
 
-- ✅ **Phase 1:** credential broker + admin dashboard, SQLite store, central token-refresh scheduler.
-  The Android app's **Settings → Sign-in Method → Connect to JTV Proxy Server** consumes
-  `GET /api/credentials`. (Smoke-tested.)
-- ✅ **Phase 2:** channel list + stream proxy (live `__hdnea__` injection + manifest rewrite) +
-  **Widevine license proxy** + a **React/Vite/Tailwind + Shaka** web player. Typecheck/build/serve
-  verified; the channel list fetches live from Jio. *Live DRM playback needs a real Jio login + HTTPS
-  in a browser (on-device test).*
-- 🟡 **Phase 3 (in progress):** EPG now/next (`GET /api/epg/:id`, live-verified). Next: catch-up,
-  favorites-sync across TVs, multi-account profiles.
+| Stream type | Web player | External players (M3U) | Notes |
+|---|---|---|---|
+| **Non-DRM HLS** (most channels) | ✅ over **plain HTTP** | ✅ | Played with **hls.js** (software AES-128), so no HTTPS/Web-Crypto needed. The AES key is fetched with the license headers the key host expects. |
+| **DRM DASH / Widevine** (some premium) | ✅ over **HTTPS** only | ❌ | Browser Widevine needs a secure context — use the HTTPS URL. Generic players can't decrypt Widevine. |
 
-## Web player (Phase 2)
-
-`web/` is a Vite/React/TypeScript/Tailwind SPA (built to `web/dist`, served by Fastify). It plays
-channels via [Shaka Player](https://github.com/shaka-project/shaka-player): a request filter routes
-every manifest/segment through `/api/proxy` (server injects the fresh token), and Widevine license
-requests go to `/api/play/:id/license`. Browser Widevine requires HTTPS — use the Caddy profile.
+The web player uses **hls.js** for non-DRM HLS (works on `http://<lan-ip>`) and **Shaka Player** for
+DRM DASH. Every manifest/segment/key is proxied through the server so the browser never talks to the
+Jio CDN directly and never sees an expired token.
 
 ## Quick start (Docker) — no `.env` needed
 
@@ -34,42 +31,78 @@ docker compose up -d --build
 
 Then set everything up **in the browser** (nothing to edit on disk):
 
-1. Open `http://<host>:8080` → **create an admin password** (first-run wizard). It's saved to
-   `data/config.json`, and a **TV access token** is generated for you.
-2. **Account** tab → **Send OTP → Verify** with your Jio number (one time).
-3. Copy the **TV access token** shown on the Account page.
+1. Open `http://<host>:8080`. On first run either **set an admin password** or choose
+   **“Continue without a password”** (open on your LAN). Saved to `data/config.json`.
+2. **Account** tab → **Send OTP → Verify** with your Jio number (one time). All TVs pick this up.
+3. **TV access codes** → add a short code per device.
 4. On each TV: **Settings → Sign-in Method → Connect to JTV Proxy Server**, enter the server URL +
-   that token. Add as many TVs as you like — no per-device login.
+   a code. Add as many TVs as you like — no per-device login.
 
-> Prefer headless/automated config? Set `ADMIN_PASSWORD` / `JTV_SERVER_TOKEN` in `.env` (see
-> `.env.example`) and they override the browser-configured values.
+> DRM channels in the **browser** need HTTPS. The server also listens on `https://<host>:8443` with a
+> self-signed cert (accept the one-time warning), or use the optional Caddy profile for a real domain:
+> edit `Caddyfile`, then `docker compose --profile https up -d`.
 
-> Browser Widevine playback (Phase 2) needs HTTPS. An optional Caddy profile is included:
-> edit `Caddyfile` with your domain, then `docker compose --profile https up -d`.
+## Web dashboard
+
+- **Channels** — searchable grid, category sidebar with icons, language filter, favourites (⭐, shared
+  across all TVs).
+- **Guide** — per-channel Now/Next across a category, **paginated (15/page)**, with a language filter.
+- **Watch** — embedded 16:9 player with **quality + audio-track** menus, a programme guide, and
+  **catch-up** (click a past show to replay it).
+- **Account & settings** — Jio account details + token status, browser OTP login, TV access codes,
+  **M3U playlist builder**, EPG source, HTTPS info, and password/no-password toggle.
+
+## M3U playlist (external players)
+
+Build a playlist URL under **Account → M3U playlist** with filters for **language, category, max
+quality, favourites-only, EPG guide and catch-up**, then paste it into your player (or download the
+`.m3u`). The same options work directly on the API:
+
+```
+http://<host>:8080/playlist.m3u?code=<accesscode>&lang=Hindi,English&group=News&quality=720&epg=1&catchup=1
+```
+
+Only **non-DRM** channels are servable to external players (DRM/Widevine can't be decrypted by
+generic apps). EPG works best with an **XMLTV** source selected.
 
 ## Local dev (Node 22+)
 
 ```bash
 cd server
 npm install
-JTV_SERVER_TOKEN=dev ADMIN_PASSWORD=dev npm run dev   # tsx watch on :8080
-npm run typecheck   # tsc --noEmit
+npm run dev            # tsx watch on :8080 (+ :8443 https)
+npm run typecheck      # tsc --noEmit
+npm --prefix web run build   # build the web UI into web/dist
 npm run build && npm start
 ```
 
 ## API
 
+Dashboard/web-player endpoints use the **admin session cookie** (open when auth is disabled).
+Machine/player endpoints use a **TV access code** (bearer header or `?code=`).
+
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET  | `/api/status` | none | Health + whether a login exists |
-| POST | `/api/admin/login` | password | Start a dashboard session (cookie) |
-| POST | `/api/admin/logout` | cookie | End the dashboard session |
-| GET  | `/api/admin/status` | cookie | Login state, mobile, last-refresh |
-| POST | `/api/login/otp/send` | cookie | Send OTP to a Jio number |
-| POST | `/api/login/otp/verify` | cookie | Verify OTP, store credentials |
-| POST | `/api/admin/refresh` | cookie | Force a token refresh now |
-| POST | `/api/admin/logout-jio` | cookie | Clear the stored Jio account |
-| GET  | `/api/credentials` | **bearer** `JTV_SERVER_TOKEN` | **TVs pull the shared AuthData here** |
+| GET  | `/api/setup/state` | none | First-run + auth state for the SPA |
+| POST | `/api/setup` | none (first run) | Set password **or** choose no-password |
+| POST | `/api/admin/login` · `/logout` | password / cookie | Dashboard session |
+| GET  | `/api/admin/status` | cookie | Login state, mobile, IDs, refresh status |
+| POST | `/api/login/otp/send` · `/verify` | cookie | Browser Jio OTP login |
+| POST | `/api/admin/refresh` · `/logout-jio` | cookie | Refresh tokens / sign out Jio |
+| GET/POST/DELETE | `/api/admin/codes…` | cookie | Manage TV access codes |
+| GET/POST | `/api/admin/epg` · `/epg/refresh` | cookie | EPG source (native / XMLTV) |
+| GET  | `/api/channels` | cookie | Channel list (name, logo, group, language) |
+| GET  | `/api/epg/:id` | cookie | Programme guide for a channel |
+| GET  | `/api/play/:id` | cookie | Manifest URL + DRM flags for the player |
+| GET  | `/api/proxy` | cookie | Manifest/segment/key proxy (token injected) |
+| POST | `/api/play/:id/license` | cookie | Widevine license proxy |
+| GET  | `/api/favorites` · `/tv/favorites` | cookie / code | Shared favourites |
+| GET  | `/api/credentials` | **code** | **TVs pull the shared AuthData here** |
+| GET  | `/playlist.m3u` | **code** | M3U playlist for external players |
+| GET  | `/live/:id.m3u8` | **code** | Resolve + proxy a channel (HLS, quality/catch-up) |
+| GET  | `/seg` | **code** | Segment/key proxy for external players |
+| GET  | `/epg.xml` | **code** | XMLTV guide for external players |
 
 ## Layout
 
@@ -77,11 +110,13 @@ npm run build && npm start
 server/
 ├─ src/
 │  ├─ config.ts            env + Jio constants
-│  ├─ jio/                 auth.ts · tokens.ts · hdnea.ts · types.ts  (ported from JioApiClient.kt)
-│  ├─ store/db.ts          SQLite credential store (better-sqlite3)
+│  ├─ jio/                 auth · tokens · stream · epg · xmltvEpg · hdnea · channels · http · types
+│  ├─ store/               db.ts (SQLite: credentials, favourites, codes) · settings.ts (config.json)
+│  ├─ proxy/streamProxy.ts token injection, manifest rewrite, quality cap, license/key headers
 │  ├─ refresh.ts           central token-refresh scheduler
-│  ├─ api/routes.ts        Fastify routes + admin/bearer auth
-│  └─ server.ts            bootstrap (serves web/ + API)
-├─ web/                    Phase 1 dashboard (static). Phase 2: React/Vite/Tailwind + Shaka player.
+│  ├─ api/                 routes.ts · play.ts (web player) · playlist.ts (M3U/API) · auth.ts
+│  ├─ https.ts             self-signed cert (self-hosted HTTPS)
+│  └─ server.ts            bootstrap (serves web/ + API on :8080 and :8443)
+├─ web/                    React/Vite/Tailwind SPA (hls.js + Shaka), built to web/dist
 ├─ Dockerfile · docker-compose.yml · Caddyfile
 ```

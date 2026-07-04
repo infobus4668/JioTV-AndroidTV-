@@ -21,8 +21,16 @@ The app authenticates against the Jio API via SMS/OTP login.
   2. `JioApiClient.sendOTP()` sends a POST request to `https://jiotvapi.media.jio.com/userservice/apis/v1/loginotp/send` with the base64-encoded `+91`-prefixed number.
   3. User enters the received OTP.
   4. `JioApiClient.verifyOTP()` POSTs the number + OTP + device info to `https://jiotvapi.media.jio.com/userservice/apis/v1/loginotp/verify`.
-  5. The API returns `ssoToken`, `authToken`, and session attributes (`subscriberId`/crmid, `unique`, `uid`).
+  5. The API returns `ssoToken`, `authToken`, a `refreshToken`, and session attributes (`subscriberId`/crmid, `unique`, `uid`).
   6. `SettingsManager.kt` stores these credentials in Android DataStore.
+
+> [!NOTE]
+> **Session token refresh** (distinct from the per-stream `__hdnea__` refresh in §7): when `geturl`
+> returns 401/403/419, `JioApiClient.refreshToken()` POSTs to
+> `https://auth.media.jio.com/tokenservice/apis/v1/refreshtoken` with the stored `refreshToken` in the
+> body **and** the current `authToken` as the `accesstoken` header (both are required — without the
+> header Jio replies "refresh token has expired"). Older logins that predate `refreshToken` capture
+> must sign in again to enable it.
 
 > [!WARNING]
 > If JioTV updates their login endpoints or headers in the future, check the Kodi plugin's updated Python files, map the new endpoint URLs, and update the HTTP headers in `JioApiClient.kt`.

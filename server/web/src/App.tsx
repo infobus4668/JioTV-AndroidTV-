@@ -5,7 +5,7 @@ import { WatchPage } from "./Player";
 import { GuidePage } from "./Guide";
 import {
   IconTv, IconUser, IconLogOut, IconSun, IconMoon, IconStar, IconSearch,
-  IconCopy, IconPlus, IconTrash, IconRefresh, IconCheck, IconGuide, categoryIcon,
+  IconCopy, IconPlus, IconTrash, IconRefresh, IconCheck, IconGuide, IconDownload, IconList, categoryIcon,
 } from "./Icons";
 import { useLangFilter, LanguageMenu } from "./lang";
 
@@ -199,8 +199,9 @@ function Channels() {
 }
 
 /* ── account ───────────────────────────────────────────────────────────── */
+type AdminStatus = { loggedIn: boolean; mobile: string; updatedAt: number; crmid: string; userId: string; uniqueId: string; deviceId: string; hasRefreshToken: boolean };
 function Account() {
-  const [st, setSt] = useState<{ loggedIn: boolean; mobile: string; updatedAt: number } | null>(null);
+  const [st, setSt] = useState<AdminStatus | null>(null);
   const [mobile, setMobile] = useState(""); const [otp, setOtp] = useState("");
   const [step, setStep] = useState<1 | 2>(1);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
@@ -214,63 +215,79 @@ function Account() {
 
   return (
     <div className="px-6 py-8">
-      <div className="mx-auto w-full max-w-5xl">
+      <div className="mx-auto w-full max-w-6xl">
         <h2 className="mb-5">Account &amp; settings</h2>
-        {/* Multi-column masonry-ish grid: cards flow across columns; wide cards span both. */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
-          <div className="card">
-            <div className="flex items-center justify-between">
-              <h3>Jio account</h3>
-              <span className={`badge ${st?.loggedIn ? "badge-success" : "badge-error"}`}>{st?.loggedIn ? "Signed in" : "Not signed in"}</span>
+        {/* Two independent columns, each stacking its own cards — so there are never uneven-height
+            gaps between them. Balanced so both columns end at roughly the same height. */}
+        <div className="flex flex-col lg:flex-row gap-5 items-start">
+          {/* Column A */}
+          <div className="flex-1 min-w-0 flex flex-col gap-5">
+            <div className="card">
+              <div className="flex items-center justify-between">
+                <h3>Jio account</h3>
+                <span className={`badge ${st?.loggedIn ? "badge-success" : "badge-error"}`}>{st?.loggedIn ? "Signed in" : "Not signed in"}</span>
+              </div>
+              <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 mt-4 text-sm">
+                <span className="text-muted">Mobile</span><span className="text-right">{st?.mobile || "—"}</span>
+                <span className="text-muted">Subscriber ID</span><span className="text-right font-mono text-xs break-all">{st?.crmid || "—"}</span>
+                <span className="text-muted">User ID</span><span className="text-right font-mono text-xs break-all">{st?.userId || "—"}</span>
+                <span className="text-muted">Unique ID</span><span className="text-right font-mono text-xs break-all">{st?.uniqueId || "—"}</span>
+                <span className="text-muted">Device ID</span><span className="text-right font-mono text-xs break-all">{st?.deviceId || "—"}</span>
+                <span className="text-muted">Auto-refresh</span>
+                <span className="text-right">{st?.loggedIn ? (st?.hasRefreshToken ? <span className="text-success">Ready</span> : <span className="text-warning">Re-login needed</span>) : "—"}</span>
+                <span className="text-muted">Tokens updated</span><span className="text-right">{st?.updatedAt ? new Date(st.updatedAt).toLocaleString() : "—"}</span>
+              </div>
+              <div className="flex gap-2 mt-5">
+                <button className="btn-secondary" onClick={() => run(api.refresh, "Tokens refreshed.")}><IconRefresh /> Refresh</button>
+                <button className="btn-ghost" onClick={() => run(api.logoutJio, "Jio account signed out.")}>Sign out Jio</button>
+              </div>
             </div>
-            <div className="grid grid-cols-2 gap-y-2 mt-4 text-sm">
-              <span className="text-muted">Mobile</span><span className="text-right">{st?.mobile || "—"}</span>
-              <span className="text-muted">Tokens updated</span><span className="text-right">{st?.updatedAt ? new Date(st.updatedAt).toLocaleString() : "—"}</span>
-            </div>
-            <div className="flex gap-2 mt-5">
-              <button className="btn-secondary" onClick={() => run(api.refresh, "Tokens refreshed.")}><IconRefresh /> Refresh</button>
-              <button className="btn-ghost" onClick={() => run(api.logoutJio, "Jio account signed out.")}>Sign out Jio</button>
-            </div>
+            <HttpsCard />
           </div>
 
-          <div className="card">
-            <h3>Sign in to Jio</h3>
-            {step === 1 ? (
-              <div className="flex gap-2 mt-3">
-                <input className="input" inputMode="numeric" placeholder="10-digit mobile number" value={mobile} onChange={(e) => setMobile(e.target.value)} />
-                <button className="btn-primary shrink-0" onClick={() => run(async () => { await api.sendOtp(mobile); setStep(2); }, "OTP sent.")}>Send OTP</button>
-              </div>
-            ) : (
-              <div className="flex gap-2 mt-3">
-                <input className="input" inputMode="numeric" placeholder="Enter OTP" value={otp} onChange={(e) => setOtp(e.target.value)} />
-                <button className="btn-primary shrink-0" onClick={() => run(async () => { await api.verifyOtp(mobile, otp); setStep(1); setOtp(""); }, "Signed in — all TVs will pick this up.")}>Verify</button>
-                <button className="btn-ghost shrink-0" onClick={() => setStep(1)}>Back</button>
-              </div>
-            )}
-            {msg && <p className={`text-sm mt-3 ${msg.ok ? "text-success" : "text-error"}`}>{msg.text}</p>}
-          </div>
-
-          <div className="lg:col-span-2"><CodesCard /></div>
-          <HttpsCard />
-          <EpgCard />
-
-          <div className="card">
-            <h3>Security</h3>
-            {authEnabled ? (
-              <div className="mt-2">
-                <p className="text-muted text-sm mb-3">Dashboard is password-protected.</p>
-                <button className="btn-secondary" onClick={() => run(async () => { await api.disableAuth(); setAuthEnabled(false); }, "Password removed — dashboard is open.")}>Remove password</button>
-              </div>
-            ) : (
-              <div className="mt-2">
-                <p className="text-muted text-sm mb-3">No password — open on your network (fine for a home LAN).</p>
-                <div className="flex gap-2">
-                  <input className="input" type="password" placeholder="New password" value={newPw} onChange={(e) => setNewPw(e.target.value)} />
-                  <button className="btn-secondary shrink-0" onClick={() => run(async () => { await api.setPassword(newPw); setNewPw(""); setAuthEnabled(true); }, "Password set.")}>Set password</button>
+          {/* Column B */}
+          <div className="flex-1 min-w-0 flex flex-col gap-5">
+            <div className="card">
+              <h3>Sign in to Jio</h3>
+              {step === 1 ? (
+                <div className="flex gap-2 mt-3">
+                  <input className="input" inputMode="numeric" placeholder="10-digit mobile number" value={mobile} onChange={(e) => setMobile(e.target.value)} />
+                  <button className="btn-primary shrink-0" onClick={() => run(async () => { await api.sendOtp(mobile); setStep(2); }, "OTP sent.")}>Send OTP</button>
                 </div>
-              </div>
-            )}
+              ) : (
+                <div className="flex gap-2 mt-3">
+                  <input className="input" inputMode="numeric" placeholder="Enter OTP" value={otp} onChange={(e) => setOtp(e.target.value)} />
+                  <button className="btn-primary shrink-0" onClick={() => run(async () => { await api.verifyOtp(mobile, otp); setStep(1); setOtp(""); }, "Signed in — all TVs will pick this up.")}>Verify</button>
+                  <button className="btn-ghost shrink-0" onClick={() => setStep(1)}>Back</button>
+                </div>
+              )}
+              {msg && <p className={`text-sm mt-3 ${msg.ok ? "text-success" : "text-error"}`}>{msg.text}</p>}
+            </div>
+            <EpgCard />
+            <div className="card">
+              <h3>Security</h3>
+              {authEnabled ? (
+                <div className="mt-2">
+                  <p className="text-muted text-sm mb-3">Dashboard is password-protected.</p>
+                  <button className="btn-secondary" onClick={() => run(async () => { await api.disableAuth(); setAuthEnabled(false); }, "Password removed — dashboard is open.")}>Remove password</button>
+                </div>
+              ) : (
+                <div className="mt-2">
+                  <p className="text-muted text-sm mb-3">No password — open on your network (fine for a home LAN).</p>
+                  <div className="flex gap-2">
+                    <input className="input" type="password" placeholder="New password" value={newPw} onChange={(e) => setNewPw(e.target.value)} />
+                    <button className="btn-secondary shrink-0" onClick={() => run(async () => { await api.setPassword(newPw); setNewPw(""); setAuthEnabled(true); }, "Password set.")}>Set password</button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
+        </div>
+
+        {/* Wide panels that need the full row. */}
+        <div className="grid gap-5 mt-5">
+          <CodesCard />
+          <M3uCard />
         </div>
       </div>
     </div>
@@ -319,6 +336,130 @@ function CodesCard() {
         <button className="btn-primary" onClick={add}><IconPlus /> Add</button>
       </div>
       {err && <p className="text-error text-sm mt-2">{err}</p>}
+    </div>
+  );
+}
+
+/* ── M3U playlist builder (for VLC / TiviMate / OTT Navigator) ─────────── */
+const QUALITIES = [
+  { v: "auto", label: "Auto (adaptive)" },
+  { v: "1080", label: "Up to 1080p" },
+  { v: "720", label: "Up to 720p" },
+  { v: "480", label: "Up to 480p" },
+  { v: "360", label: "Up to 360p" },
+];
+
+function useToggleSet(): [Set<string>, (v: string) => void] {
+  const [set, setSet] = useState<Set<string>>(new Set());
+  const toggle = (v: string) => setSet((s) => { const n = new Set(s); n.has(v) ? n.delete(v) : n.add(v); return n; });
+  return [set, toggle];
+}
+
+/** Compact checkbox list used for the language / category pickers. */
+function CheckList({ options, selected, onToggle }: { options: string[]; selected: Set<string>; onToggle: (v: string) => void }) {
+  return (
+    <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 max-h-44 overflow-auto rounded-md border border-border p-2 bg-surface-2">
+      {options.map((o) => (
+        <button key={o} onClick={() => onToggle(o)} className="flex items-center gap-2 min-w-0 text-left px-1.5 py-1 rounded-md text-sm hover:bg-surface-hover">
+          <span className={`w-4 h-4 shrink-0 rounded grid place-items-center border ${selected.has(o) ? "bg-accent border-accent" : "border-border-strong"}`}>{selected.has(o) && <IconCheck size={12} className="text-white" />}</span>
+          <span className="truncate">{o}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function M3uCard() {
+  const [channels, setChannels] = useState<Channel[]>([]);
+  const [codes, setCodes] = useState<AccessCode[]>([]);
+  const [authEnabled, setAuthEnabled] = useState(false);
+  const [code, setCode] = useState("");
+  const [langs, toggleLang] = useToggleSet();
+  const [cats, toggleCat] = useToggleSet();
+  const [quality, setQuality] = useState("auto");
+  const [onlyFav, setOnlyFav] = useState(false);
+  const [epg, setEpg] = useState(true);
+  const [catchup, setCatchup] = useState(true);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    api.channels().then((r) => setChannels(r.channels)).catch(() => {});
+    api.codes().then((r) => { setCodes(r.codes); if (r.codes[0]) setCode(r.codes[0].code); }).catch(() => {});
+    api.setupState().then((s) => setAuthEnabled(s.authEnabled)).catch(() => {});
+  }, []);
+
+  const languages = useMemo(() => Array.from(new Set(channels.map((c) => c.language))).sort(), [channels]);
+  const categories = useMemo(() => Array.from(new Set(channels.map((c) => c.group))).sort(), [channels]);
+  const matchCount = useMemo(() => channels.filter((c) =>
+    (langs.size === 0 || langs.has(c.language)) && (cats.size === 0 || cats.has(c.group))
+  ).length, [channels, langs, cats]);
+
+  const url = useMemo(() => {
+    const p = new URLSearchParams();
+    if (code) p.set("code", code);
+    if (langs.size) p.set("lang", [...langs].join(","));
+    if (cats.size) p.set("group", [...cats].join(","));
+    if (quality !== "auto") p.set("quality", quality);
+    if (onlyFav) p.set("fav", "1");
+    if (epg) p.set("epg", "1");
+    if (catchup) p.set("catchup", "1");
+    return `${location.origin}/playlist.m3u?${p.toString()}`;
+  }, [code, langs, cats, quality, onlyFav, epg, catchup]);
+
+  const copy = async () => { try { await navigator.clipboard.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch {} };
+
+  return (
+    <div className="card">
+      <div className="flex items-center gap-2"><IconList size={18} className="text-muted" /><h3>M3U playlist</h3></div>
+      <p className="text-muted text-sm mt-1">
+        Build a playlist link for external players (VLC, TiviMate, OTT Navigator). Pick filters below — only
+        non-DRM channels play in these players; DRM channels use the web player or TV app.
+      </p>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mt-4">
+        <div className="space-y-4">
+          <div>
+            <label className="text-sm text-muted">Access code {authEnabled ? "" : "(not required — auth is off)"}</label>
+            {codes.length ? (
+              <select className="input mt-1" value={code} onChange={(e) => setCode(e.target.value)}>
+                {codes.map((c) => <option key={c.code} value={c.code}>{c.name} · {c.code}</option>)}
+              </select>
+            ) : (
+              <p className="text-subtle text-sm mt-1">{authEnabled ? "Add a TV access code above first." : "No code needed."}</p>
+            )}
+          </div>
+          <div>
+            <label className="text-sm text-muted">Max quality</label>
+            <select className="input mt-1" value={quality} onChange={(e) => setQuality(e.target.value)}>
+              {QUALITIES.map((q) => <option key={q.v} value={q.v}>{q.label}</option>)}
+            </select>
+          </div>
+          <div className="space-y-2 pt-1">
+            <label className="flex items-center gap-2 text-sm cursor-pointer"><input type="checkbox" checked={onlyFav} onChange={(e) => setOnlyFav(e.target.checked)} /> Favourites only</label>
+            <label className="flex items-center gap-2 text-sm cursor-pointer"><input type="checkbox" checked={epg} onChange={(e) => setEpg(e.target.checked)} /> Include EPG guide (<code>url-tvg</code>)</label>
+            <label className="flex items-center gap-2 text-sm cursor-pointer"><input type="checkbox" checked={catchup} onChange={(e) => setCatchup(e.target.checked)} /> Enable catch-up (TiviMate)</label>
+          </div>
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between"><label className="text-sm text-muted">Languages{langs.size ? ` · ${langs.size}` : " · all"}</label></div>
+          <div className="mt-1"><CheckList options={languages} selected={langs} onToggle={toggleLang} /></div>
+        </div>
+        <div>
+          <div className="flex items-center justify-between"><label className="text-sm text-muted">Categories{cats.size ? ` · ${cats.size}` : " · all"}</label></div>
+          <div className="mt-1"><CheckList options={categories} selected={cats} onToggle={toggleCat} /></div>
+        </div>
+      </div>
+
+      <div className="mt-5">
+        <label className="text-sm text-muted">Playlist URL · <span className="text-foreground">{matchCount} channels</span></label>
+        <div className="flex gap-2 mt-1">
+          <input className="input font-mono text-xs" readOnly value={url} onFocus={(e) => e.target.select()} />
+          <button className="btn-secondary shrink-0" onClick={copy}>{copied ? <IconCheck className="text-success" /> : <IconCopy />} {copied ? "Copied" : "Copy"}</button>
+          <a className="btn-primary shrink-0" href={url} download="jtv-playlist.m3u"><IconDownload /> Download</a>
+        </div>
+        <p className="text-subtle text-xs mt-2">Paste the URL into your player as a remote/URL playlist so it refreshes automatically, or use the downloaded <code>.m3u</code> file.</p>
+      </div>
     </div>
   );
 }

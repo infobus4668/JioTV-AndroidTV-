@@ -52,6 +52,12 @@ export const IconGuide = ({ className, size }: P) => (
 export const IconChevron = ({ className, size }: P) => (
   <svg {...base(size)} className={className}><path d="m6 9 6 6 6-6" /></svg>
 );
+export const IconDownload = ({ className, size }: P) => (
+  <svg {...base(size)} className={className}><path d="M12 3v12M7 10l5 5 5-5" /><path d="M5 21h14" /></svg>
+);
+export const IconList = ({ className, size }: P) => (
+  <svg {...base(size)} className={className}><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" /></svg>
+);
 
 /* category icons */
 const News = (p: P) => <svg {...base(p.size)} className={p.className}><path d="M4 4h13v16H6a2 2 0 0 1-2-2V4z" /><path d="M17 8h3v10a2 2 0 0 1-2 2M8 8h5M8 12h5M8 16h5" /></svg>;

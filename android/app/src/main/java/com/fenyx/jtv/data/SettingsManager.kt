@@ -35,6 +35,7 @@ class SettingsManager(private val context: Context) {
         
         private val AUTH_SSO_TOKEN = stringPreferencesKey("auth_sso_token")
         private val AUTH_AUTH_TOKEN = stringPreferencesKey("auth_auth_token")
+        private val AUTH_REFRESH_TOKEN = stringPreferencesKey("auth_refresh_token")
         private val AUTH_CRMID = stringPreferencesKey("auth_crmid")
         private val AUTH_UNIQUE_ID = stringPreferencesKey("auth_unique_id")
         private val AUTH_DEVICE_ID = stringPreferencesKey("auth_device_id")
@@ -158,7 +159,8 @@ class SettingsManager(private val context: Context) {
                 crmid = preferences[AUTH_CRMID] ?: "",
                 uniqueId = preferences[AUTH_UNIQUE_ID] ?: "",
                 deviceId = preferences[AUTH_DEVICE_ID] ?: "",
-                userId = preferences[AUTH_USER_ID] ?: ""
+                userId = preferences[AUTH_USER_ID] ?: "",
+                refreshToken = preferences[AUTH_REFRESH_TOKEN] ?: ""
             )
         }
     }
@@ -286,6 +288,7 @@ class SettingsManager(private val context: Context) {
         context.dataStore.edit { preferences ->
             preferences[AUTH_SSO_TOKEN] = authData.ssoToken
             preferences[AUTH_AUTH_TOKEN] = authData.authToken
+            preferences[AUTH_REFRESH_TOKEN] = authData.refreshToken
             preferences[AUTH_CRMID] = authData.crmid
             preferences[AUTH_UNIQUE_ID] = authData.uniqueId
             preferences[AUTH_DEVICE_ID] = authData.deviceId
@@ -297,6 +300,7 @@ class SettingsManager(private val context: Context) {
         context.dataStore.edit { preferences ->
             preferences.remove(AUTH_SSO_TOKEN)
             preferences.remove(AUTH_AUTH_TOKEN)
+            preferences.remove(AUTH_REFRESH_TOKEN)
             preferences.remove(AUTH_CRMID)
             preferences.remove(AUTH_UNIQUE_ID)
             preferences.remove(AUTH_DEVICE_ID)

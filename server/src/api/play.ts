@@ -92,19 +92,24 @@ export async function registerPlayRoutes(app: FastifyInstance): Promise<void> {
       if (!cid || !u) return reply.code(400).send({ error: "cid and u are required" });
       try {
         const target = decodeURIComponent(u);
-        const upstream = await proxyUpstream(cid, target, req.headers["range"] as string | undefined);
+        // Don't forward Range for manifests: we buffer + rewrite the whole document, and a partial
+        // (206) response would truncate it. Segments still honour Range for seeking.
+        const isManifestUrl = /\.(mpd|m3u8)(\?|$)/i.test(target);
+        const upstream = await proxyUpstream(cid, target, isManifestUrl ? undefined : (req.headers["range"] as string | undefined));
         const contentType = upstream.headers.get("content-type") ?? "";
 
         // Manifests are small: buffer + rewrite URLs so the browser resolves media via the proxy.
         const looksManifest =
+          isManifestUrl ||
           contentType.toLowerCase().includes("mpegurl") ||
-          contentType.toLowerCase().includes("dash+xml") ||
-          /\.(mpd|m3u8)(\?|$)/i.test(target);
+          contentType.toLowerCase().includes("dash+xml");
         if (looksManifest) {
           const text = await upstream.text();
           const rewritten = rewriteManifest(text, contentType, target, `/api/proxy?cid=${encodeURIComponent(cid)}&u=`);
-          reply.code(upstream.status);
-          if (contentType) reply.header("content-type", contentType);
+          // Always 200: we return the full rewritten document, so a pass-through 206 (which hls.js
+          // rejects when it lacks a Content-Range header) would be incorrect.
+          reply.code(200);
+          reply.header("content-type", contentType || "application/vnd.apple.mpegurl");
           return reply.send(rewritten ?? text);
         }
 

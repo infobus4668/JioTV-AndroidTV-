@@ -12,7 +12,9 @@ export function GuidePage() {
   const [group, setGroup] = useState("");
   const [favs, setFavs] = useState<Set<string>>(new Set());
   const [langs, toggleLang, clearLangs] = useLangFilter();
+  const [page, setPage] = useState(0);
   const FAV = "Favorites";
+  const PAGE_SIZE = 15;
 
   useEffect(() => {
     api.channels().then((r) => setChannels(r.channels)).catch(() => setChannels([]));
@@ -22,21 +24,26 @@ export function GuidePage() {
   const groups = useMemo(() => [FAV, "All", ...Array.from(new Set((channels ?? []).map((c) => c.group))).sort()], [channels]);
   const languages = useMemo(() => Array.from(new Set((channels ?? []).map((c) => c.language))).sort(), [channels]);
   useEffect(() => { if (!group) setGroup("All"); }, [group]);
+  // Reset to the first page whenever the filters change.
+  useEffect(() => { setPage(0); }, [group, langs]);
 
-  // Cap rows so we don't fire hundreds of EPG requests at once.
-  const rows = useMemo(
+  const filtered = useMemo(
     () => (channels ?? [])
       .filter((c) => langs.size === 0 || langs.has(c.language))
-      .filter((c) => group === FAV ? favs.has(c.id) : group === "All" ? true : c.group === group).slice(0, 80),
+      .filter((c) => group === FAV ? favs.has(c.id) : group === "All" ? true : c.group === group),
     [channels, group, favs, langs]
   );
+  // Paginate so we only fetch EPG for the ~15 channels currently on screen.
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const curPage = Math.min(page, pageCount - 1);
+  const rows = filtered.slice(curPage * PAGE_SIZE, curPage * PAGE_SIZE + PAGE_SIZE);
 
   if (!channels) return <div className="empty-state">Loading guide…</div>;
 
   return (
     <div className="p-6">
       <div className="flex items-center justify-between mb-4">
-        <h2>TV guide</h2>
+        <h2>TV guide {filtered.length > 0 && <span className="text-subtle text-base font-normal">· {filtered.length} channels</span>}</h2>
         <LanguageMenu available={languages} langs={langs} onToggle={toggleLang} onClear={clearLangs} />
       </div>
       <div className="mb-4 overflow-x-auto no-scrollbar">
@@ -49,9 +56,18 @@ export function GuidePage() {
       {rows.length === 0 ? (
         <div className="empty-state">{group === FAV ? "No favourites yet." : "No channels here."}</div>
       ) : (
-        <div className="grid gap-2">
-          {rows.map((c) => <GuideRow key={c.id} channel={c} onPlay={() => nav(`/watch/${c.id}`, { state: { name: c.name } })} />)}
-        </div>
+        <>
+          <div className="grid gap-2">
+            {rows.map((c) => <GuideRow key={c.id} channel={c} onPlay={() => nav(`/watch/${c.id}`, { state: { name: c.name } })} />)}
+          </div>
+          {pageCount > 1 && (
+            <div className="flex items-center justify-center gap-4 mt-5">
+              <button className="btn-secondary btn-sm" disabled={curPage === 0} onClick={() => setPage(curPage - 1)}>← Previous</button>
+              <span className="text-muted text-sm tabular-nums">Page {curPage + 1} of {pageCount}</span>
+              <button className="btn-secondary btn-sm" disabled={curPage >= pageCount - 1} onClick={() => setPage(curPage + 1)}>Next →</button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

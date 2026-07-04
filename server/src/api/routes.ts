@@ -97,6 +97,12 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       loggedIn: !!c,
       mobile: c?.mobile ?? "",
       updatedAt: c?.updatedAt ?? 0,
+      // Non-secret account identifiers (safe to show the account owner); tokens are never exposed.
+      crmid: c?.crmid ?? "",
+      userId: c?.userId ?? "",
+      uniqueId: c?.uniqueId ?? "",
+      deviceId: c?.deviceId ?? "",
+      hasRefreshToken: !!c?.refreshToken,
     };
   });
 

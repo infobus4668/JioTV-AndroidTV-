@@ -27,7 +27,10 @@ object JioApiClient {
         val crmid: String,
         val uniqueId: String,
         val deviceId: String,
-        val userId: String
+        val userId: String,
+        // Distinct from authToken — captured at OTP login and required (as a body field) by the
+        // refreshtoken endpoint. Empty for server-mode logins (the server refreshes centrally).
+        val refreshToken: String = ""
     )
 
     data class StreamData(
@@ -125,7 +128,8 @@ object JioApiClient {
                         crmid = sessionObj?.optString("subscriberId", "") ?: "",
                         uniqueId = sessionObj?.optString("unique", "") ?: "",
                         deviceId = json.optString("deviceId", ""),
-                        userId = sessionObj?.optString("uid", "") ?: ""
+                        userId = sessionObj?.optString("uid", "") ?: "",
+                        refreshToken = json.optString("refreshToken", "")
                     )
                     Result.success(authData)
                 } else {
@@ -148,34 +152,57 @@ object JioApiClient {
             val settingsManager = com.fenyx.jtv.data.SettingsManager(context)
             val authData = settingsManager.authDataFlow.first()
             if (authData == null || authData.ssoToken.isEmpty()) return@withContext Result.failure(Exception("No token"))
+            if (authData.refreshToken.isEmpty()) {
+                // Older logins never stored a refreshToken; the endpoint can't work without it.
+                return@withContext Result.failure(Exception("No refresh token — sign out and sign in again to enable auto-refresh."))
+            }
 
             val url = URL("https://auth.media.jio.com/tokenservice/apis/v1/refreshtoken?langId=6")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("ssotoken", authData.ssoToken)
-            connection.setRequestProperty("appname", APP_NAME)
+            // The CURRENT access token must ride along as a header, or Jio always answers "refresh token
+            // has expired" even with a valid refreshToken (verified against the live API).
+            connection.setRequestProperty("accesstoken", authData.authToken)
+            connection.setRequestProperty("appName", APP_NAME)
             connection.setRequestProperty("os", OS)
             connection.setRequestProperty("devicetype", DEVICE_TYPE)
+            connection.setRequestProperty("deviceId", authData.deviceId)
+            connection.setRequestProperty("uniqueId", authData.uniqueId)
+            connection.setRequestProperty("versionCode", "389")
+            connection.setRequestProperty("Content-Type", "application/json")
             connection.doOutput = true
-            
+
+            val body = JSONObject().apply {
+                put("appName", APP_NAME)
+                put("deviceId", authData.deviceId)
+                put("refreshToken", authData.refreshToken)
+                put("uniqueId", authData.uniqueId)
+            }.toString()
+            OutputStreamWriter(connection.outputStream).use { it.write(body); it.flush() }
+
             if (connection.responseCode in 200..299) {
                 val responseText = connection.inputStream.bufferedReader().use { it.readText() }
                 val json = JSONObject(responseText)
-                // The refresh service may return a new ssoToken and/or a new authToken depending on
-                // the endpoint version. Update whichever are present.
+                // The refresh service returns a fresh authToken (and sometimes a new ssoToken /
+                // refreshToken). Update whichever are present, keeping the rest.
                 val newSsoToken = json.optString("ssoToken", "")
                 val newAuthToken = json.optString("authToken", "")
+                val newRefreshToken = json.optString("refreshToken", "")
                 if (newSsoToken.isNotEmpty() || newAuthToken.isNotEmpty()) {
                     settingsManager.saveAuthData(
                         authData.copy(
                             ssoToken = newSsoToken.ifEmpty { authData.ssoToken },
-                            authToken = newAuthToken.ifEmpty { authData.authToken }
+                            authToken = newAuthToken.ifEmpty { authData.authToken },
+                            refreshToken = newRefreshToken.ifEmpty { authData.refreshToken }
                         )
                     )
                     Log.d(TAG, "Token refreshed successfully")
                     return@withContext Result.success(true)
                 }
             }
+            val errText = (connection.errorStream ?: connection.inputStream)?.bufferedReader()?.use { it.readText() } ?: ""
+            Log.e(TAG, "Refresh failed ${connection.responseCode}: $errText")
             Result.failure(Exception("Refresh failed with code ${connection.responseCode}"))
         } catch (e: Exception) {
             Log.e(TAG, "Exception in refreshToken", e)

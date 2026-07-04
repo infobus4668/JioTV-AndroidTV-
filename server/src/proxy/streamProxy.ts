@@ -70,8 +70,13 @@ export async function proxyUpstream(
 ): Promise<Response> {
   const c = await getStream(channelId);
   const url = withFreshToken(targetUrl, c.hdnea);
-  const headers: Record<string, string> = { ...c.data.streamHeaders };
-  if (c.hdnea) headers["Cookie"] = HDNEA_MARKER + c.hdnea;
+  // The AES-128 key for the non-DRM "Fallback" HLS lives on tv.media.jio.com and authenticates like
+  // the Widevine license server (ssoToken/Accesstoken/crmid…), NOT like the CDN (which uses the
+  // __hdnea__ cookie). Sending stream headers there yields a 403 and playback fails to decrypt, so use
+  // the license headers for key requests instead.
+  const isKey = /\.pkey(\?|$)/i.test(targetUrl) || /aes128\.key/i.test(targetUrl) || /(^|\/\/)tv\.media\.jio\.com\//i.test(targetUrl);
+  const headers: Record<string, string> = { ...(isKey ? c.data.licenseHeaders : c.data.streamHeaders) };
+  if (!isKey && c.hdnea) headers["Cookie"] = HDNEA_MARKER + c.hdnea;
   if (rangeHeader) headers["Range"] = rangeHeader;
   return fetch(url, { headers });
 }
@@ -90,6 +95,52 @@ export async function proxyLicense(channelId: string, challenge: Buffer): Promis
 }
 
 /**
+ * Drops HLS master-playlist variants whose vertical resolution exceeds `maxHeight` (e.g. 720),
+ * keeping the `#EXT-X-STREAM-INF` tag together with its URI line. If every variant is above the cap
+ * we keep the single lowest one so the playlist is never left empty. Non-variant lines pass through.
+ */
+function capVariants(lines: string[], maxHeight: number): string[] {
+  const heightOf = (tag: string) => {
+    const m = /RESOLUTION=\d+x(\d+)/i.exec(tag);
+    return m ? Number(m[1]) : 0;
+  };
+  // First pass: is any variant at/below the cap?
+  let anyKept = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim().startsWith("#EXT-X-STREAM-INF")) {
+      const h = heightOf(lines[i]);
+      if (!h || h <= maxHeight) { anyKept = true; break; }
+    }
+  }
+  // If all variants are above the cap, find the smallest to keep as a fallback.
+  let smallest = Infinity;
+  if (!anyKept) {
+    for (const l of lines) if (l.trim().startsWith("#EXT-X-STREAM-INF")) smallest = Math.min(smallest, heightOf(l) || Infinity);
+  }
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (t.startsWith("#EXT-X-STREAM-INF")) {
+      const h = heightOf(lines[i]);
+      const keep = anyKept ? (!h || h <= maxHeight) : h === smallest;
+      const uri = i + 1 < lines.length ? lines[i + 1] : "";
+      if (keep) { out.push(lines[i]); if (uri) out.push(uri); }
+      i++; // skip the URI line either way (it belongs to this variant)
+      continue;
+    }
+    if (t.startsWith("#EXT-X-I-FRAME-STREAM-INF")) {
+      // Trick-play (keyframe) streams carry their URI inline; drop the ones above the cap too.
+      const h = heightOf(lines[i]);
+      if (h && h > maxHeight) continue;
+      out.push(lines[i]);
+      continue;
+    }
+    out.push(lines[i]);
+  }
+  return out;
+}
+
+/**
  * Rewrites a manifest so the browser player resolves media correctly through the proxy:
  *  - **DASH (.mpd):** inject an absolute top-level `<BaseURL>` (the real manifest directory) when one
  *    isn't already present, so relative SegmentTemplate media resolves to absolute Jio URLs — which
@@ -102,7 +153,8 @@ export function rewriteManifest(
   body: string,
   contentType: string,
   requestedUrl: string,
-  segPrefix: string
+  segPrefix: string,
+  maxHeight?: number
 ): string | null {
   const ct = contentType.toLowerCase();
   const isMpd = ct.includes("dash+xml") || body.trimStart().startsWith("<");
@@ -124,8 +176,8 @@ export function rewriteManifest(
       }
     };
     const wrap = (u: string) => proxyPrefix + encodeURIComponent(abs(u));
-    return body
-      .split("\n")
+    const lines = maxHeight && maxHeight > 0 ? capVariants(body.split("\n"), maxHeight) : body.split("\n");
+    return lines
       .map((line) => {
         const t = line.trim();
         if (t === "") return line;

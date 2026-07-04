@@ -96,6 +96,28 @@ It uses center-channel processing to **lift the voice and lower the background**
 
 ---
 
+## 🖥️ Companion Server (optional)
+
+A self-hostable **companion server** lets you **log in once and share it across every TV** — plus watch
+in a browser and feed any IPTV player. It's a single Docker image (Node + React).
+
+- **One login for all your TVs** — the server stores your Jio login and refreshes tokens centrally.
+  Each TV connects with a short access code (**Settings → Sign-in Method → Connect to JTV Proxy
+  Server**); you never log in per device, and re-login only ever happens on the server.
+- **Web player** — a full JioTV experience in the browser: channel grid, TV guide, **catch-up**,
+  favourites and a language filter. Non-DRM channels play over plain HTTP (via hls.js); DRM channels
+  play over the server's HTTPS URL.
+- **M3U for external players** — generate a playlist (with EPG + catch-up) for **VLC, TiviMate, OTT
+  Navigator, Kodi**, filtered by language / category / quality.
+
+```bash
+cd server && docker compose up -d --build   # then open http://<host>:8080
+```
+
+See **[`server/README.md`](server/README.md)** for full setup, the API, and details.
+
+---
+
 ## 🛠️ Building from Source
 
 **Requirements:** Android Studio (or the command-line SDK) with JDK 17+.
@@ -150,6 +172,15 @@ Then build the signed, minified release (~3–4 MB):
 ---
 
 ## 📝 Changelog
+
+### v1.4.0
+- **Companion server** (self-hostable, Docker): log in once and share it across every TV, a full
+  **browser web player** (channel grid, TV guide, catch-up, favourites, language filter), and an
+  **M3U playlist generator** for external IPTV players (VLC/TiviMate/OTT Navigator) with EPG + catch-up.
+- Non-DRM channels now **play in the browser over plain HTTP** (hls.js + server-side AES-key handling);
+  DRM channels play over the server's HTTPS URL.
+- **App:** fixed token auto-refresh (captures the refresh token at login and calls the refresh endpoint
+  correctly), so the app recovers stale sessions on its own.
 
 ### v1.3.2
 - Reworked **Voice Boost** into a 5-level dialogue enhancer (center-channel processing) with **bass preserved** and a presence boost for clarity — no more thin/hollow sound. The old "Reduce Background" toggle is merged in.
