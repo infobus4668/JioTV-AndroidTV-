@@ -12,9 +12,9 @@ export interface EpgProgram {
   catchup?: boolean;
 }
 
-// Jio's getepg `offset` is a day index; offset 0 covers yesterday+today, higher offsets go forward.
-// We fetch a few days so the guide's date selector can browse yesterday … a few days ahead.
-const OFFSETS = [0, 1, 2, 3];
+// Jio's getepg `offset` is a day index; offset 0 covers yesterday+today. Catch-up only exists for the
+// past and Jio's EPG doesn't go back further, so offset 0 is all we need (and it's 1 request, not 4).
+const OFFSETS = [0];
 const TTL_MS = 30 * 60 * 1000;
 const cache = new Map<string, { at: number; programs: EpgProgram[] }>();
 
@@ -46,8 +46,8 @@ export async function getNativeEpg(channelId: string): Promise<EpgProgram[]> {
 
   const parts = await Promise.all(OFFSETS.map((o) => fetchOffset(channelId, o)));
   const now = Date.now();
-  const past = now - 28 * 3600_000;       // include yesterday (for catch-up)
-  const future = now + 4 * 24 * 3600_000; // a few days ahead (for the guide)
+  const past = now - 28 * 3600_000;   // include yesterday (for catch-up)
+  const future = now + 24 * 3600_000; // rest of today (for the live/next view)
   const seen = new Set<string>();
   const programs = parts
     .flat()

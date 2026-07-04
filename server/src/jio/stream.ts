@@ -36,7 +36,7 @@ export interface CatchupParams {
 export async function getStreamData(
   channelId: string,
   auth: AuthData,
-  opts: { catchup?: CatchupParams } = {}
+  opts: { catchup?: CatchupParams; preferDrm?: boolean } = {}
 ): Promise<StreamData> {
   const enc = encodeURIComponent;
   let body: string;
@@ -99,7 +99,11 @@ export async function getStreamData(
   let streamUrl: string;
   let isMpd: boolean;
   let licenseUrl = "";
-  if (hlsIsReal) {
+  if (opts.preferDrm && hasMpd) {
+    // The proxy asked for DRM DASH — the non-DRM HLS "Fallback" for this channel is dead (404), so use
+    // the Widevine DASH (needs HTTPS + a CDM; L1 channels only play on the TV app).
+    streamUrl = mpd.result ?? ""; isMpd = true; licenseUrl = mpd.key ?? "";
+  } else if (hlsIsReal) {
     // Real non-DRM HLS — plays in a browser with no HTTPS/Widevine.
     streamUrl = hls; isMpd = false;
   } else if (hasMpd) {

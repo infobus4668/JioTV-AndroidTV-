@@ -22,8 +22,9 @@ object TvDimens {
     val SpaceLg = 24.dp
     val SpaceXl = 32.dp
 
-    // A comfortable focus-scale for cards/rows (border + scale is the clearest 10-foot focus cue).
-    const val FocusedScale = 1.06f
+    // A subtle focus-scale for cards/rows (border does most of the 10-foot focus cue; too much zoom
+    // looks jumpy). Keep this gentle.
+    const val FocusedScale = 1.03f
 }
 
 /** Overscan-safe padding for a full-screen TV surface. */

@@ -1,4 +1,5 @@
 import { getStreamData, GeturlAuthError, type StreamData, type CatchupParams } from "../jio/stream";
+import type { AuthData } from "../jio/types";
 import { extractHdneaToken, extractTokenExpiryEpochSec } from "../jio/hdnea";
 import { refreshTokens } from "../jio/tokens";
 import { getStoredCredentials, updateTokens } from "../store/db";
@@ -32,15 +33,34 @@ function parseKey(key: string): { channelId: string; catchup?: CatchupParams } {
   return { channelId: key };
 }
 
+// Per-channel decision (this process): "hls" = the non-DRM Fallback is alive; "drm" = it's dead (404),
+// use the Widevine DASH instead. Decided once (first play) then reused so we skip the extra check.
+const streamMode = new Map<string, "hls" | "drm">();
+
+/** A manifest URL is "alive" if it returns 2xx and looks like a real HLS/DASH manifest (not a 404 page).
+ *  Some channels (e.g. Zee TV HD) hand back a token-signed URL whose CDN path doesn't actually exist. */
+async function masterAlive(url: string, headers: Record<string, string>): Promise<boolean> {
+  try {
+    const res = await fetch(url, { headers });
+    if (res.status < 200 || res.status >= 300) return false;
+    const t = (await res.text()).trimStart();
+    return t.startsWith("#EXTM3U") || t.startsWith("<?xml") || t.startsWith("<MPD");
+  } catch {
+    return false;
+  }
+}
+
 async function resolve(key: string): Promise<CachedStream> {
   const { channelId, catchup } = parseKey(key);
   const creds = getStoredCredentials();
   if (!creds) throw new Error("No active login on the server — sign in on the Account page first.");
-  const opts = catchup ? { catchup } : {};
+  const cachedMode = catchup ? undefined : streamMode.get(channelId);
+  const opts = catchup ? { catchup } : { preferDrm: cachedMode === "drm" };
   // A 403 from geturl is per-channel: Jio blocks it for this account (delisted / licensing) even though
   // it's still in the channel list. It's NOT a token or plan issue and no refresh fixes it.
   const blocked = () =>
     new Error("Jio blocked this channel (HTTP 403) — it isn't available on your account right now even though it's listed. A few channels are like this regardless of plan; if there's an HD version of the same channel, try that.");
+  let activeCreds: AuthData = creds;
   let data: StreamData;
   try {
     data = await getStreamData(channelId, creds, opts);
@@ -50,6 +70,7 @@ async function resolve(key: string): Promise<CachedStream> {
       // 401/419 usually means the SSO token went stale — refresh once and retry (like the app).
       const refreshed = await refreshTokens(creds);
       updateTokens(refreshed, Date.now());
+      activeCreds = refreshed;
       try {
         data = await getStreamData(channelId, refreshed, opts);
       } catch (e2) {
@@ -60,6 +81,32 @@ async function resolve(key: string): Promise<CachedStream> {
       throw e;
     }
   }
+
+  // First live play of a channel: verify the URL Jio gave us actually resolves. Some channels hand back
+  // a token-signed URL whose CDN path 404s. If the non-DRM HLS is dead, try the DRM DASH; if BOTH are
+  // dead the channel is simply down on Jio's side, so say so plainly instead of failing to parse a 404.
+  if (!catchup && cachedMode === undefined && data.streamUrl) {
+    const down = () =>
+      new Error("This channel is temporarily unavailable on Jio's servers (its stream URL returns 404). It's a Jio-side outage for this channel, not a login/plan issue — try again later or pick another channel.");
+    if (!data.isMpd) {
+      if (!(await masterAlive(data.streamUrl, data.streamHeaders))) {
+        // HLS Fallback is dead — try the Widevine DASH.
+        const drm = await getStreamData(channelId, activeCreds, { preferDrm: true });
+        if (drm.isMpd && drm.streamUrl && (await masterAlive(drm.streamUrl, drm.streamHeaders))) {
+          data = drm; streamMode.set(channelId, "drm");
+        } else {
+          throw down(); // don't cache — retry next time in case Jio brings it back
+        }
+      } else {
+        streamMode.set(channelId, "hls");
+      }
+    } else if (!(await masterAlive(data.streamUrl, data.streamHeaders))) {
+      throw down();
+    } else {
+      streamMode.set(channelId, "drm");
+    }
+  }
+
   const hdnea = extractHdneaToken(data.streamUrl);
   const expSec = extractTokenExpiryEpochSec(hdnea);
   const expiresAtMs = expSec > 0 ? expSec * 1000 : Date.now() + 90_000;

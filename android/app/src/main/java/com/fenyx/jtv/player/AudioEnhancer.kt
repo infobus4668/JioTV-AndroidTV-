@@ -28,8 +28,15 @@ class AudioEnhancer {
         var gainMb = 0
         if (normalize) gainMb += 500              // ~+5 dB
         gainMb += voiceBoost.coerceIn(0, 4) * 150 // makeup for the side attenuation, scales with level
-        if (gainMb <= 0) return
 
+        // ALWAYS attach the effect (even at 0 gain / everything off). Two reasons:
+        //  1) 0 mB is inaudible, so there's no downside.
+        //  2) On several Amlogic/MediaTek TV boxes the AudioTrack backing our explicit audio session id
+        //     doesn't actually start on the first stream — playback sits in STATE_BUFFERING forever —
+        //     until an AudioEffect is bound to that session. Attaching a LoudnessEnhancer here kicks it
+        //     alive. This is exactly why toggling "Voice Boost" by hand used to "fix" a stuck first
+        //     playback right after setup: it was the first thing that ever bound an effect to the
+        //     session. Doing it unconditionally at startup means the user never has to.
         try {
             loudness = LoudnessEnhancer(sessionId).apply {
                 setTargetGain(gainMb)

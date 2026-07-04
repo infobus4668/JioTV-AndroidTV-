@@ -111,6 +111,13 @@ fun LoginScreen(
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
+    // Hardware BACK: from the OTP step go back to the number step; from the number step return to the
+    // setup chooser instead of exiting the app.
+    androidx.activity.compose.BackHandler {
+        if (step == 2) { step = 1; otp = ""; errorMessage = null }
+        else onChangeMethod?.invoke()
+    }
+
     val onNumberClick = { digit: String ->
         if (step == 1) {
             if (mobileNumber.length < 10) mobileNumber += digit
@@ -338,7 +345,9 @@ private fun TvInputDisplay(value: String, label: String, placeholder: String) {
                 text = value.ifEmpty { placeholder },
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
-                letterSpacing = 4.sp,
+                // Only the entered digits get wide spacing (for readability). The placeholder uses
+                // normal spacing so it reads as the same UI font as the rest of the screen.
+                letterSpacing = if (value.isEmpty()) 0.sp else 4.sp,
                 color = if (value.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant
                         else MaterialTheme.colorScheme.onBackground
             )

@@ -47,7 +47,10 @@ fun MainNavigation() {
     val lastChannelId by settingsManager.lastChannelIdFlow.collectAsState(initial = null)
     val lastChannelGroup by settingsManager.lastChannelGroupFlow.collectAsState(initial = null)
     val hasAutoPlayed = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
-    val allChannels by mainViewModel.channels.collectAsState()
+    // Use the COLLAPSED (display) list the player actually navigates, and wait for it to be populated
+    // before autoplaying — otherwise autoplay fired against the raw list (wrong index) or before the
+    // collapse ran (0 channels), which is what caused the black "0 channels / Loading…" screen on boot.
+    val allChannels by mainViewModel.displayChannels.collectAsState()
     val isLoading by mainViewModel.isLoading.collectAsState()
 
     androidx.compose.runtime.LaunchedEffect(autoplayLastChannel, lastChannelId, allChannels, isLoading) {
@@ -90,11 +93,18 @@ fun MainNavigation() {
             null -> com.fenyx.jtv.ui.setup.SetupScreen(
                 onChoosePhone = { scope.launch { settingsManager.setSetupMode("phone") } },
                 onChooseServer = { scope.launch { settingsManager.setSetupMode("server") } },
+                onChooseJtv = { scope.launch { settingsManager.setSetupMode("jtv") } },
                 modifier = Modifier.safeDrawingPadding()
             )
+            // NOTE: no safeDrawingPadding here — the setup screen paints its own full-bleed background
+            // and top-anchors its content, so the page must NOT get the IME inset (that's what pushed
+            // the whole screen up when the keyboard opened).
             "server" -> com.fenyx.jtv.ui.setup.ServerSetupScreen(
-                onBack = { scope.launch { settingsManager.setSetupMode(null) } },
-                modifier = Modifier.safeDrawingPadding()
+                onBack = { scope.launch { settingsManager.setSetupMode(null) } }
+            )
+            "jtv" -> com.fenyx.jtv.ui.setup.ServerSetupScreen(
+                jtvMode = true,
+                onBack = { scope.launch { settingsManager.setSetupMode(null) } }
             )
             else -> LoginScreen(
                 onChangeMethod = { scope.launch { settingsManager.setSetupMode(null) } },
@@ -118,7 +128,19 @@ fun MainNavigation() {
                         onSettingsClick = {
                             backStack.add(Settings)
                         },
+                        onSearchClick = {
+                            backStack.add(Search)
+                        },
                         viewModel = mainViewModel,
+                        modifier = Modifier.safeDrawingPadding()
+                    )
+                }
+                entry<Search> {
+                    com.fenyx.jtv.ui.search.SearchScreen(
+                        viewModel = mainViewModel,
+                        onChannelClick = { index, group ->
+                            backStack.add(Player(channelIndex = index, group = group))
+                        },
                         modifier = Modifier.safeDrawingPadding()
                     )
                 }
@@ -130,7 +152,10 @@ fun MainNavigation() {
                 }
                 entry<Player> { playerArgs ->
                     val groups by mainViewModel.groups.collectAsState()
-                    val allChannels = mainViewModel.getAllChannels()
+                    // Reactive (not a one-shot snapshot) so if the player is opened while the collapsed
+                    // list is still being built, it recomposes and fills in — no more Settings-and-back
+                    // workaround to recover from a "0 channels" launch.
+                    val allChannels by mainViewModel.displayChannels.collectAsState()
 
                     // Memoize the expensive per-group grouping + index lookups so they run once per
                     // channel-list change, not on every recomposition (this was a real source of
@@ -155,7 +180,9 @@ fun MainNavigation() {
                         onBack = { backStack.removeLastOrNull() },
                         onSettings = {
                             backStack.add(Settings)
-                        }
+                        },
+                        variantsFor = { id -> mainViewModel.variantsFor(id) },
+                        initialGroup = playerArgs.group
                     )
                 }
             },

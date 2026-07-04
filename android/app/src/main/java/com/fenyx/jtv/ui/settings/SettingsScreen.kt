@@ -24,10 +24,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.tv.material3.Text
@@ -64,14 +68,21 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
     val epgUrl by settingsManager.epgUrlFlow.collectAsState(initial = "https://avkb.short.gy/epg.xml.gz")
     val epgSyncStatus by mainViewModel.epgSyncStatus.collectAsState()
     val autoplayLastChannel by settingsManager.autoplayLastChannelFlow.collectAsState(initial = false)
+    val groupLanguageVariants by settingsManager.groupLanguageVariantsFlow.collectAsState(initial = true)
     val setupMode by settingsManager.setupModeFlow.collectAsState(initial = null)
     val serverUrl by settingsManager.serverUrlFlow.collectAsState(initial = "")
+    val serverRefreshing by mainViewModel.serverRefreshing.collectAsState()
+    val serverRefreshMsg by mainViewModel.serverRefreshMsg.collectAsState()
 
     var showLanguagePicker by remember { mutableStateOf(false) }
     var showQualityPicker by remember { mutableStateOf(false) }
     var showPlayerResizeModePicker by remember { mutableStateOf(false) }
     var showBufferPicker by remember { mutableStateOf(false) }
     var showEpgUrlDialog by remember { mutableStateOf(false) }
+
+    // Initial focus so the first D-pad press works on entry (previously nothing was focused).
+    val firstItemFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { firstItemFocus.requestFocus() } }
 
     val bufferOptions = listOf(
         30 to "Data Saver (30s)",
@@ -144,6 +155,7 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
+                    .focusRestorer()
                     // Overscan-safe margins so settings rows never sit under the panel bezel.
                     .padding(
                         start = TvDimens.SpaceLg, end = TvDimens.OverscanHorizontal,
@@ -155,9 +167,13 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
 
                 item {
                     SettingsItem(
+                        modifier = Modifier.focusRequester(firstItemFocus),
                         title = "Sign-in Method",
-                        subtitle = if (setupMode == "server") "Proxy server: ${serverUrl.ifEmpty { "(not set)" }}"
-                                   else "Phone (OTP) on this device",
+                        subtitle = when (setupMode) {
+                            "server" -> "Self-hosted server: ${serverUrl.ifEmpty { "(not set)" }}"
+                            "jtv" -> "JTV Server (access code)"
+                            else -> "Phone (OTP) on this device"
+                        },
                         value = "Change",
                         valueColor = TvPrimary,
                         // Returning to the chooser = clear credentials + reset the chosen mode.
@@ -168,6 +184,18 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
                             }
                         }
                     )
+                }
+
+                if (setupMode == "server" || setupMode == "jtv") {
+                    item {
+                        SettingsItem(
+                            title = "Refresh from Server",
+                            subtitle = "Pull the latest login + channel list from the server now",
+                            value = if (serverRefreshing) "Refreshing…" else (serverRefreshMsg ?: "Refresh"),
+                            valueColor = TvPrimary,
+                            onClick = { mainViewModel.refreshFromServer() }
+                        )
+                    }
                 }
 
                 item {
@@ -224,6 +252,17 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
                                 mainViewModel.fetchEpg(forceRefresh = true) 
                             }
                         }
+                    )
+                }
+
+                item { SectionHeader("Channels") }
+
+                item {
+                    SettingsToggle(
+                        title = "Group Language Variants",
+                        subtitle = "Show one tile per channel and pick the language in the player (e.g. Star Sports Hindi/Tamil/Telugu). Turn off to see every language as its own channel.",
+                        isEnabled = groupLanguageVariants,
+                        onClick = { scope.launch { settingsManager.setGroupLanguageVariants(!groupLanguageVariants) } }
                     )
                 }
 
@@ -387,6 +426,13 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
         if (showEpgUrlDialog) {
             Dialog(onDismissRequest = { showEpgUrlDialog = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
                 var tempUrl by remember { mutableStateOf(epgUrl) }
+                val urlFieldFocus = remember { FocusRequester() }
+                val epgKeyboard = LocalSoftwareKeyboardController.current
+                LaunchedEffect(Unit) {
+                    runCatching { urlFieldFocus.requestFocus() }
+                    kotlinx.coroutines.delay(50)
+                    epgKeyboard?.show() // TV: focus alone doesn't open the on-screen keyboard
+                }
                 Box(
                     modifier = Modifier.fillMaxSize().background(TvDarkBackground.copy(alpha = 0.85f)),
                     contentAlignment = Alignment.Center
@@ -404,7 +450,7 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
                             BasicTextField(
                                 value = tempUrl,
                                 onValueChange = { tempUrl = it },
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier.fillMaxWidth().focusRequester(urlFieldFocus),
                                 textStyle = androidx.compose.ui.text.TextStyle(color = TvOnSurface, fontSize = 16.sp),
                                 cursorBrush = SolidColor(TvPrimary),
                                 singleLine = true
@@ -453,10 +499,11 @@ fun SettingsItem(
     value: String = "",
     valueColor: Color = com.fenyx.jtv.theme.TvPrimary,
     icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         onClick = onClick,
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(12.dp)),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),

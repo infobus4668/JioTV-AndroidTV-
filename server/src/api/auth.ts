@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { envServerToken, isAuthEnabled } from "../store/settings";
+import { envServerToken, isAuthEnabled, isDashboardLocked } from "../store/settings";
 import { hasCode } from "../store/db";
 
 /** In-memory admin sessions (reset on restart — fine for a single self-hosted instance). */
@@ -13,9 +13,10 @@ export function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb);
 }
 
-/** Guards the admin dashboard + web-player endpoints (browser session cookie). Open when auth is off. */
+/** Guards the admin dashboard + web-player endpoints (browser session cookie). Open when the dashboard
+ *  isn't locked. A MASTER_KEY locks it even when the TV endpoints are open. */
 export function requireAdmin(req: FastifyRequest, reply: FastifyReply, done: () => void) {
-  if (!isAuthEnabled()) return done();
+  if (!isDashboardLocked()) return done();
   const sid = (req.cookies as Record<string, string | undefined>)?.admin_session;
   if (!sid || !sessions.has(sid)) {
     reply.code(401).send({ error: "Not authenticated" });

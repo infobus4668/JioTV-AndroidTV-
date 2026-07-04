@@ -36,10 +36,12 @@ export interface AccessCode {
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
-  });
+  // Only advertise a JSON content-type when we actually send a body. A bodyless request (e.g. DELETE)
+  // with `Content-Type: application/json` makes Fastify reject the empty body with a 400 — which is why
+  // deleting access codes from the dashboard failed while curl (no content-type) worked.
+  const headers: Record<string, string> = { ...((init?.headers as Record<string, string>) ?? {}) };
+  if (init?.body != null) headers["Content-Type"] = "application/json";
+  const res = await fetch(path, { ...init, headers });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error((data as any).error ?? `HTTP ${res.status}`);
   return data as T;

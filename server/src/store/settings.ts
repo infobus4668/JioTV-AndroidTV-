@@ -72,15 +72,18 @@ function eqConst(a: string, b: string): boolean {
   return ab.length === bb.length && timingSafeEqual(ab, bb);
 }
 
-/** True once setup is done — a password exists (env/file) OR the user chose "no password". */
+/** True once setup is done — a master key / password exists (env/file) OR the user chose "no password".
+ *  A configured MASTER_KEY counts as configured, so the setup wizard is skipped and the login shows. */
 export function isAdminConfigured(): boolean {
   const f = load();
-  return !!(config.adminPassword || f.adminPasswordHash || f.authDisabled);
+  return !!(config.masterKey || config.adminPassword || f.adminPasswordHash || f.authDisabled);
 }
 
 /**
- * Whether auth is actually enforced. An env ADMIN_PASSWORD always forces it on; otherwise it's on
- * only when a file password exists and the user hasn't chosen "no password".
+ * Whether the TV credential endpoints (requireServerToken) enforce a code. An env ADMIN_PASSWORD forces
+ * it on; otherwise it's on only when a file password exists and the user hasn't chosen "no password".
+ * NOTE: the MASTER_KEY intentionally does NOT force this on — it only locks the settings dashboard (see
+ * [isDashboardLocked]) — so adding a master key never breaks TVs that pull credentials.
  */
 export function isAuthEnabled(): boolean {
   if (config.adminPassword) return true;
@@ -89,8 +92,17 @@ export function isAuthEnabled(): boolean {
   return !!f.adminPasswordHash;
 }
 
+/** Whether the settings/admin DASHBOARD requires a login. The MASTER_KEY locks it even when the TV
+ *  endpoints are open, so "not just anyone can open settings" without affecting TV access. */
+export function isDashboardLocked(): boolean {
+  return !!config.masterKey || isAuthEnabled();
+}
+
+/** Accepts any valid credential to unlock the dashboard: the master key, the env password, or the
+ *  file password. */
 export function verifyAdminPassword(pw: string): boolean {
-  if (config.adminPassword) return eqConst(pw, config.adminPassword);
+  if (config.masterKey && eqConst(pw, config.masterKey)) return true;
+  if (config.adminPassword && eqConst(pw, config.adminPassword)) return true;
   const h = load().adminPasswordHash;
   return h ? verifyHash(pw, h) : false;
 }

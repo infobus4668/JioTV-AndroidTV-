@@ -11,10 +11,19 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withPermit
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
+
+    companion object {
+        // Sentinel category values for the Home sidebar. Real Jio categories never collide with these.
+        const val GROUP_ALL: String = "__ALL__"
+        const val GROUP_FAVORITES: String = "__FAVORITES__"
+    }
 
     private val settingsManager = SettingsManager(application)
     private val epgRepository = com.fenyx.jtv.data.EpgRepository(application)
@@ -27,8 +36,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val favoriteChannels: StateFlow<Set<String>> = _favoriteChannels.asStateFlow()
 
     private val _allChannels = MutableStateFlow<List<Channel>>(emptyList())
-    
-    // Moved init block down
+
+    // Channels as shown in the UI: language-variant collapsing is applied here when enabled, so every
+    // consumer (grid, per-group player list, index maps) sees the same collapsed list.
+    private val _displayChannels = MutableStateFlow<List<Channel>>(emptyList())
+    /** Collapsed all-channels list (reactive) — used by Search. */
+    val displayChannels: StateFlow<List<Channel>> = _displayChannels.asStateFlow()
+
+    @Volatile
+    private var variantMap: Map<String, List<com.fenyx.jtv.data.ChannelLanguage.Variant>> = emptyMap()
+
+    /** Language feeds collapsed under the given representative channel id ([] when it isn't a family). */
+    fun variantsFor(channelId: String): List<com.fenyx.jtv.data.ChannelLanguage.Variant> =
+        variantMap[channelId] ?: emptyList()
 
     private val _channels = MutableStateFlow<List<Channel>>(emptyList())
     val channels: StateFlow<List<Channel>> = _channels.asStateFlow()
@@ -50,31 +70,117 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var hasLoaded: Boolean = false
 
+    // "Refresh from Server" button state (server mode).
+    private val _serverRefreshing = MutableStateFlow(false)
+    val serverRefreshing: StateFlow<Boolean> = _serverRefreshing.asStateFlow()
+    private val _serverRefreshMsg = MutableStateFlow<String?>(null)
+    val serverRefreshMsg: StateFlow<String?> = _serverRefreshMsg.asStateFlow()
+
     init {
         viewModelScope.launch {
             settingsManager.favoriteChannelsFlow.collect { favorites ->
                 _favoriteChannels.value = favorites
             }
         }
+        // Apply language-variant collapsing. Depends ONLY on the channel list and the toggle (both
+        // deduped), and the collapse runs on Dispatchers.Default — previously it also keyed on
+        // defaultLanguageFlow and ran on the main thread, so EVERY DataStore write (incl. the
+        // setLastChannelId on each channel zap) re-collapsed all ~1300 channels on the UI thread and
+        // reshuffled the list, which both janked the app and swapped the playing channel out from under
+        // the player. Representative selection is now language-independent, so the list stays stable.
+        viewModelScope.launch {
+            combine(
+                _allChannels,
+                settingsManager.groupLanguageVariantsFlow.distinctUntilChanged()
+            ) { all, groupOn ->
+                if (groupOn && all.isNotEmpty()) com.fenyx.jtv.data.ChannelLanguage.collapse(all)
+                else all to emptyMap<String, List<com.fenyx.jtv.data.ChannelLanguage.Variant>>()
+            }.flowOn(kotlinx.coroutines.Dispatchers.Default).collect { (display, map) ->
+                variantMap = map
+                _displayChannels.value = display
+            }
+        }
         // Compute filtered/sorted channels reactively in the ViewModel (not in Compose)
         viewModelScope.launch {
-            combine(_allChannels, _selectedGroup, _favoriteChannels) { all, group, favs ->
-                val list = if (group == null) all else all.filter { it.group == group }
+            combine(_displayChannels, _selectedGroup, _favoriteChannels) { all, group, favs ->
+                val list = when (group) {
+                    null, GROUP_ALL -> all
+                    GROUP_FAVORITES -> all.filter { favs.contains(it.id) }
+                    else -> all.filter { it.group == group }
+                }
                 list.sortedWith(compareByDescending<Channel> { favs.contains(it.id) }.thenBy { it.channelNumber })
             }.collect { _filteredChannels.value = it }
         }
         // NOTE: EPG is intentionally NOT fetched here. Downloading + parsing the XMLTV file on every
         // launch hammered the CPU on low-end TVs and slowed boot. MainScreen triggers fetchEpg() only
         // when EPG mode is enabled, and Settings offers a manual refresh.
+
+        // Server mode: keep credentials fresh in the BACKGROUND. The app boots instantly on the cached
+        // credentials (never blocks on the network); this quietly re-pulls the server's centrally
+        // refreshed token once shortly after launch and every few hours, so a rotating shared token
+        // never breaks playback and the user never has to re-run setup. Failures are ignored — the
+        // cached credentials keep working until the next attempt, and a stream 401 also self-heals.
+        viewModelScope.launch {
+            val mode = settingsManager.setupModeFlow.first()
+            if (mode == "server" || mode == "jtv") {
+                while (true) {
+                    syncServerCredentialsQuietly()
+                    kotlinx.coroutines.delay(3 * 60 * 60 * 1000L) // every 3h while the app is open
+                }
+            }
+        }
     }
 
-    /** Get all channels (unfiltered) for the player's channel switching */
-    fun getAllChannels(): List<Channel> = _allChannels.value
+    private suspend fun syncServerCredentialsQuietly() {
+        val mode = settingsManager.setupModeFlow.first()
+        val urls = com.fenyx.jtv.data.ServerClient.candidateUrls(mode, settingsManager.serverUrlFlow.first())
+        if (urls.all { it.isBlank() }) return
+        val tok = settingsManager.serverTokenFlow.first()
+        com.fenyx.jtv.data.ServerClient.fetchCredentials(urls, tok)
+            .onSuccess { settingsManager.saveAuthData(it) }
+    }
+
+    /**
+     * "Refresh from Server" button: forces the server to refresh the Jio token (POST /api/refresh),
+     * pulls the fresh credentials, and force-reloads the channel list. Surfaces status via
+     * [serverRefreshing] / [serverRefreshMsg].
+     */
+    fun refreshFromServer() {
+        if (_serverRefreshing.value) return
+        viewModelScope.launch {
+            _serverRefreshing.value = true
+            _serverRefreshMsg.value = null
+            val mode = settingsManager.setupModeFlow.first()
+            val urls = com.fenyx.jtv.data.ServerClient.candidateUrls(mode, settingsManager.serverUrlFlow.first())
+            val tok = settingsManager.serverTokenFlow.first()
+            com.fenyx.jtv.data.ServerClient.refreshCredentials(urls, tok)
+                .onSuccess { auth ->
+                    settingsManager.saveAuthData(auth)
+                    // Also force a fresh channel-list pull from the network.
+                    val app = getApplication<Application>()
+                    val result = JioApiClient.getMobileChannelList(app, forceNetwork = true)
+                    result.getOrNull()?.takeIf { it.isNotEmpty() }?.let { publishChannels(it) }
+                    _serverRefreshMsg.value = "Refreshed"
+                }
+                .onFailure { _serverRefreshMsg.value = it.message ?: "Refresh failed" }
+            _serverRefreshing.value = false
+            kotlinx.coroutines.delay(4000)
+            _serverRefreshMsg.value = null
+        }
+    }
+
+    /** Get all channels (unfiltered, collapsed) for the player's channel switching */
+    fun getAllChannels(): List<Channel> = _displayChannels.value
 
     /** Get channels filtered by group for channel switching within a category, sorted by favorites */
     fun getChannelsByGroup(group: String?): List<Channel> {
-        val list = if (group == null) _allChannels.value else _allChannels.value.filter { it.group == group }
+        val source = _displayChannels.value
         val favorites = _favoriteChannels.value
+        val list = when (group) {
+            null, GROUP_ALL -> source
+            GROUP_FAVORITES -> source.filter { favorites.contains(it.id) }
+            else -> source.filter { it.group == group }
+        }
         return list.sortedWith(compareByDescending<Channel> { favorites.contains(it.id) }.thenBy { it.channelNumber })
     }
 
@@ -94,14 +200,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _groups.value = parsedChannels.map { it.group }.distinct().sorted()
         hasLoaded = true
 
-        // Restore last selected category
+        // Restore last selected category (accepting the "All"/"Favorites" pseudo-categories),
+        // defaulting new users to "All" so the first screen shows everything.
         if (_selectedGroup.value == null) {
             val lastCategory = settingsManager.lastSelectedCategoryFlow.first()
             val groups = _groups.value
-            _selectedGroup.value = if (lastCategory != null && groups.contains(lastCategory)) {
-                lastCategory
-            } else {
-                groups.firstOrNull()
+            _selectedGroup.value = when {
+                lastCategory == GROUP_ALL || lastCategory == GROUP_FAVORITES -> lastCategory
+                lastCategory != null && groups.contains(lastCategory) -> lastCategory
+                else -> GROUP_ALL
             }
         }
     }
@@ -164,17 +271,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private val fetchingEpgChannels = mutableSetOf<String>()
+    // Cap concurrent native-EPG requests: scrolling the EPG list fast used to fire one network call
+    // per newly-visible row, flooding a weak TV with dozens of parallel connections.
+    private val epgFetchSemaphore = kotlinx.coroutines.sync.Semaphore(4)
 
     fun fetchNativeEpgIfMissing(channelId: String) {
         val currentData = _epgData.value[channelId]
         if (currentData.isNullOrEmpty() && !fetchingEpgChannels.contains(channelId)) {
             fetchingEpgChannels.add(channelId)
             viewModelScope.launch {
-                val programs = epgRepository.getNativeEpgForChannel(channelId)
-                if (programs.isNotEmpty()) {
-                    _epgData.value = _epgData.value + (channelId to programs)
+                try {
+                    epgFetchSemaphore.withPermit {
+                        val programs = epgRepository.getNativeEpgForChannel(channelId)
+                        if (programs.isNotEmpty()) {
+                            val now = System.currentTimeMillis()
+                            val cur = programs.find { it.startMs <= now && it.stopMs > now }
+                            Log.d("EpgDiag", "ch=$channelId n=${programs.size} now=$now " +
+                                "range=${programs.first().startMs}..${programs.last().stopMs} current='${cur?.title}'")
+                            _epgData.value = _epgData.value + (channelId to programs)
+                        }
+                    }
+                } finally {
+                    fetchingEpgChannels.remove(channelId)
                 }
-                fetchingEpgChannels.remove(channelId)
             }
         }
     }

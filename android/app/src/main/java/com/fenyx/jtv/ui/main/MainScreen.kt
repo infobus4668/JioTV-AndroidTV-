@@ -7,18 +7,25 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.*
+import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -45,6 +52,7 @@ import kotlinx.coroutines.launch
 fun MainScreen(
     onChannelClick: (Int, String?) -> Unit,
     onSettingsClick: () -> Unit,
+    onSearchClick: () -> Unit = {},
     modifier: Modifier = Modifier,
     viewModel: MainViewModel = viewModel()
 ) {
@@ -64,11 +72,12 @@ fun MainScreen(
         viewModel.fetchChannels()
     }
     
-    LaunchedEffect(epgMode) {
-        if (epgMode) {
-            viewModel.fetchEpg()
-        }
-    }
+    // EPG is driven by Jio's NATIVE per-channel guide (reliable, keyed by channel_id, correct ms
+    // epochs) — filled per visible row below via fetchNativeEpgIfMissing. We intentionally do NOT
+    // auto-download/parse the XMLTV source here: the default source's IDs (ts…/sun…) don't map to Jio
+    // channel_ids so it shows nothing, and parsing its ~19 MB file on every EPG entry hammered weak TVs.
+    // The XMLTV path stays available only via the manual "Refresh EPG Data" button in Settings, for
+    // users who point EPG Source URL at a Jio-ID-keyed feed.
 
     // Single shared 30s clock for every EPG row. Previously each visible row ran its own
     // `while(true){ delay(30s) }` ticker and recomposed independently — on a full EPG screen that was
@@ -91,25 +100,80 @@ fun MainScreen(
                 .fillMaxHeight()
                 .width(210.dp)
                 .background(TvDarkSurface)
+                // focusGroup so D-pad Left/Right treats the sidebar as one cluster (predictable
+                // traversal to/from the grid instead of geometry-based zig-zag).
+                .focusGroup()
                 // Overscan-safe top/bottom + a small left inset so focused labels stay in the safe area.
                 .padding(start = 12.dp, top = TvDimens.OverscanVertical, bottom = TvDimens.OverscanVertical)
         ) {
 
 
-            // Category list
-            LazyColumn(modifier = Modifier.weight(1f)) {
-                items(groups) { group ->
-                    val isSelected = selectedGroup == group
+            // Search entry — a D-pad-friendly way to find one of ~1300 channels by name.
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
+                onClick = onSearchClick,
+                shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
+                scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),
+                colors = ClickableSurfaceDefaults.colors(
+                    containerColor = Color.Transparent,
+                    focusedContainerColor = TvDarkSurfaceVariant
+                ),
+                border = ClickableSurfaceDefaults.border(
+                    focusedBorder = androidx.tv.material3.Border(
+                        border = androidx.compose.foundation.BorderStroke(2.dp, TvFocusBorder),
+                        shape = RoundedCornerShape(8.dp)
+                    )
+                )
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                ) {
+                    Icon(Icons.Default.Search, contentDescription = "Search", tint = TvPrimary, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text("Search", color = TvOnSurface, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // "All" + "Favorites" pseudo-categories precede the real Jio categories.
+            val sidebarGroups = remember(groups, favoriteChannels) {
+                buildList {
+                    add(MainViewModel.GROUP_ALL)
+                    if (favoriteChannels.isNotEmpty()) add(MainViewModel.GROUP_FAVORITES)
+                    addAll(groups)
+                }
+            }
+
+            // Category list. focusRestorer remembers the last-focused category so returning to the
+            // sidebar lands where you left it, not back at the top.
+            LazyColumn(modifier = Modifier.weight(1f).focusRestorer()) {
+                items(sidebarGroups) { group ->
+                    val isSelected = selectedGroup == group ||
+                        (selectedGroup == null && group == MainViewModel.GROUP_ALL)
+                    val label = when (group) {
+                        MainViewModel.GROUP_ALL -> "All"
+                        MainViewModel.GROUP_FAVORITES -> "★ Favorites"
+                        else -> group
+                    }
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 8.dp, vertical = 2.dp),
                         onClick = { viewModel.setSelectedGroup(group) },
                         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
+                        // Full-width sidebar rows can't scale without clipping, so the focus cue is a
+                        // bright border + fill (clearly visible at 10 feet).
                         scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),
                         colors = ClickableSurfaceDefaults.colors(
                             containerColor = if (isSelected) TvPrimaryContainer.copy(alpha = 0.3f) else Color.Transparent,
                             focusedContainerColor = TvDarkSurfaceVariant
+                        ),
+                        border = ClickableSurfaceDefaults.border(
+                            focusedBorder = androidx.tv.material3.Border(
+                                border = androidx.compose.foundation.BorderStroke(2.dp, TvFocusBorder),
+                                shape = RoundedCornerShape(8.dp)
+                            )
                         )
                     ) {
                         Row(
@@ -118,7 +182,7 @@ fun MainScreen(
                         ) {
 
                             Text(
-                                text = group,
+                                text = label,
                                 color = if (isSelected) TvPrimary else TvOnSurface,
                                 fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
                                 maxLines = 1,
@@ -149,6 +213,12 @@ fun MainScreen(
                 colors = ClickableSurfaceDefaults.colors(
                     containerColor = Color.Transparent,
                     focusedContainerColor = TvDarkSurfaceVariant
+                ),
+                border = ClickableSurfaceDefaults.border(
+                    focusedBorder = androidx.tv.material3.Border(
+                        border = androidx.compose.foundation.BorderStroke(2.dp, TvFocusBorder),
+                        shape = RoundedCornerShape(8.dp)
+                    )
                 )
             ) {
                 Row(
@@ -170,6 +240,12 @@ fun MainScreen(
                 colors = ClickableSurfaceDefaults.colors(
                     containerColor = Color.Transparent,
                     focusedContainerColor = TvDarkSurfaceVariant
+                ),
+                border = ClickableSurfaceDefaults.border(
+                    focusedBorder = androidx.tv.material3.Border(
+                        border = androidx.compose.foundation.BorderStroke(2.dp, TvFocusBorder),
+                        shape = RoundedCornerShape(8.dp)
+                    )
                 )
             ) {
                 Row(
@@ -234,6 +310,20 @@ fun MainScreen(
                     allChannels.withIndex().associate { (i, ch) -> ch.id to i }
                 }
 
+                // Initial focus: drop focus onto the first channel once per screen entry after the list
+                // appears, so the first D-pad press works — and so returning from the player (which
+                // recomposes Home fresh) re-establishes focus instead of leaving the remote dead.
+                // Uses plain `remember` (not rememberSaveable) so each fresh entry re-requests; the guard
+                // stops category switches within one entry from yanking focus back to the grid.
+                val firstItemFocus = remember { FocusRequester() }
+                var initialFocusDone by remember { mutableStateOf(false) }
+                LaunchedEffect(filteredChannels.isNotEmpty()) {
+                    if (!initialFocusDone && filteredChannels.isNotEmpty()) {
+                        runCatching { firstItemFocus.requestFocus() }
+                        initialFocusDone = true
+                    }
+                }
+
                 Column(modifier = Modifier.fillMaxSize()) {
 
 
@@ -244,12 +334,13 @@ fun MainScreen(
                     } else if (epgMode) {
                         LazyColumn(
                             verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.focusRestorer(),
                             contentPadding = PaddingValues(
                                 start = TvDimens.SpaceMd, end = TvDimens.OverscanHorizontal,
                                 top = TvDimens.OverscanVertical, bottom = TvDimens.OverscanVertical
                             )
                         ) {
-                            items(items = filteredChannels, key = { it.id }) { channel ->
+                            itemsIndexed(items = filteredChannels, key = { _, ch -> ch.id }) { index, channel ->
                                 val channelIndex = channelIndexMap[channel.id] ?: 0
 
                                 val programs = epgData[channel.id] ?: emptyList()
@@ -263,7 +354,8 @@ fun MainScreen(
                                     channel = channel,
                                     epgPrograms = programs,
                                     now = epgNow,
-                                    onClick = { onChannelClick(channelIndex, selectedGroup) }
+                                    onClick = { onChannelClick(channelIndex, selectedGroup) },
+                                    modifier = if (index == 0) Modifier.focusRequester(firstItemFocus) else Modifier
                                 )
                             }
                         }
@@ -272,6 +364,9 @@ fun MainScreen(
                             columns = GridCells.Adaptive(150.dp),
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp),
+                            // focusRestorer keeps your place in the grid when you leave and come back
+                            // (e.g. return from the player), instead of snapping to the first card.
+                            modifier = Modifier.focusRestorer(),
                             // Overscan-safe: extra room on the right/top/bottom so focused cards (which
                             // scale up) and the last column aren't clipped by the panel edge.
                             contentPadding = PaddingValues(
@@ -279,12 +374,13 @@ fun MainScreen(
                                 top = TvDimens.OverscanVertical, bottom = TvDimens.OverscanVertical
                             )
                         ) {
-                            items(items = filteredChannels, key = { it.id }) { channel ->
+                            itemsIndexed(items = filteredChannels, key = { _, ch -> ch.id }) { index, channel ->
                                 val channelIndex = channelIndexMap[channel.id] ?: 0
 
                                 ChannelCard(
                                     channel = channel,
-                                    onClick = { onChannelClick(channelIndex, selectedGroup) }
+                                    onClick = { onChannelClick(channelIndex, selectedGroup) },
+                                    modifier = if (index == 0) Modifier.focusRequester(firstItemFocus) else Modifier
                                 )
                             }
                         }
@@ -298,14 +394,15 @@ fun MainScreen(
 }
 
 @Composable
-private fun ChannelCard(
+fun ChannelCard(
     channel: com.fenyx.jtv.data.Channel,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
 
     Surface(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .aspectRatio(1f),
         onClick = onClick,
@@ -399,7 +496,8 @@ fun EpgChannelRow(
     channel: com.fenyx.jtv.data.Channel,
     epgPrograms: List<com.fenyx.jtv.data.EpgProgram>,
     now: Long,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     // Reuse a single formatter instance instead of allocating per-recomposition
@@ -409,7 +507,7 @@ fun EpgChannelRow(
     val nextPrograms = remember(epgPrograms, now) { epgPrograms.filter { it.startMs > now }.take(3) }
 
     Surface(
-        modifier = Modifier.fillMaxWidth().heightIn(min = 100.dp),
+        modifier = modifier.fillMaxWidth().heightIn(min = 100.dp),
         onClick = onClick,
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1.02f),

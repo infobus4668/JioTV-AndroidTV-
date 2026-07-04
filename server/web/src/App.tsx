@@ -7,7 +7,7 @@ import {
   IconTv, IconUser, IconLogOut, IconSun, IconMoon, IconStar, IconSearch,
   IconCopy, IconPlus, IconTrash, IconRefresh, IconCheck, IconGuide, IconDownload, IconList, categoryIcon,
 } from "./Icons";
-import { useLangFilter, LanguageMenu, usePrefQuality, QualitySelect } from "./lang";
+import { useLangFilter, LanguageMenu, usePrefQuality, QualitySelect, CategoryMenu } from "./lang";
 
 /* ── theme ─────────────────────────────────────────────────────────────── */
 function useTheme() {
@@ -86,7 +86,7 @@ function Login({ onLogin }: { onLogin: () => void }) {
     <Centered>
       <h1>JTV Server</h1>
       <p className="text-muted text-sm mt-1 mb-5">Sign in to the dashboard.</p>
-      <label className="text-sm text-muted">Admin password</label>
+      <label className="text-sm text-muted">Admin password or master key</label>
       <input className="input mt-1.5" type="password" value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
       <button className="btn-primary w-full mt-4" disabled={busy} onClick={submit}>{busy ? "Signing in…" : "Sign in"}</button>
       {err && <p className="text-error text-sm mt-3">{err}</p>}
@@ -101,22 +101,29 @@ function Layout({ onLogout }: { onLogout: () => void }) {
   const link = ({ isActive }: { isActive: boolean }) => `tab ${isActive ? "active" : ""}`;
   return (
     <div className="h-full flex flex-col">
-      <header className="flex items-center gap-4 px-5 h-14 border-b border-border shrink-0">
-        <div className="flex items-center gap-2">
-          <span className="grid place-items-center w-7 h-7 rounded-md bg-accent text-white"><IconTv size={16} /></span>
-          <span className="font-semibold tracking-tight">JTV<span className="text-muted font-normal"> Server</span></span>
+      <header className="flex items-center gap-2 sm:gap-4 px-3 sm:px-5 h-14 border-b border-border shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="grid place-items-center w-8 h-8 rounded-lg text-white shadow-sm"
+            style={{ background: "linear-gradient(135deg, var(--accent-strong), var(--accent))" }}><IconTv size={18} /></span>
+          <span className="font-semibold tracking-tight">JTV<span className="text-muted font-normal hidden sm:inline"> Server</span></span>
         </div>
-        <nav className="tabs ml-2">
-          <NavLink to="/channels" className={link}><IconTv size={15} /> Channels</NavLink>
-          <NavLink to="/guide" className={link}><IconGuide size={15} /> Guide</NavLink>
-          <NavLink to="/account" className={link}><IconUser size={15} /> Account</NavLink>
+        {/* On phones the nav sits on the right (theme/logout are hidden); on desktop it follows the logo. */}
+        <nav className="min-w-0 overflow-x-auto no-scrollbar ml-auto md:ml-2">
+          <div className="tabs">
+            <NavLink to="/channels" className={link}><IconTv size={15} /> <span className="hidden sm:inline">Channels</span></NavLink>
+            <NavLink to="/guide" className={link}><IconGuide size={15} /> <span className="hidden sm:inline">Guide</span></NavLink>
+            <NavLink to="/account" className={link}><IconUser size={15} /> <span className="hidden sm:inline">Account</span></NavLink>
+          </div>
         </nav>
-        <div className="ml-auto flex items-center gap-2">
+        {/* Theme + logout are desktop-only chrome; hidden on phones to keep the top bar clean. */}
+        <div className="hidden md:flex ml-auto items-center gap-1 sm:gap-2 shrink-0">
           <button className="icon-btn" title="Toggle theme" onClick={toggle}>{theme === "dark" ? <IconSun /> : <IconMoon />}</button>
           <button className="icon-btn" title="Log out" onClick={logout}><IconLogOut /></button>
         </div>
       </header>
-      <main className="flex-1 min-h-0 overflow-y-auto"><Outlet /></main>
+      {/* stable both-edges keeps left/right gutters equal whether or not a scrollbar is present —
+          otherwise the vertical scrollbar eats the right gutter and the page looks shifted left. */}
+      <main className="flex-1 min-h-0 overflow-y-auto [scrollbar-gutter:stable_both-edges]"><Outlet /></main>
     </div>
   );
 }
@@ -152,7 +159,8 @@ function Channels() {
 
   return (
     <div className="flex h-full min-h-0">
-      <aside className="w-52 shrink-0 border-r border-border overflow-y-auto py-3 px-2">
+      {/* Desktop category rail — hidden on phone/tablet where the toolbar strip takes over. */}
+      <aside className="hidden md:block w-52 shrink-0 border-r border-border overflow-y-auto py-3 px-2">
         {groups.map((g) => {
           const Ico = g === FAV ? null : categoryIcon(g);
           const active = group === g;
@@ -166,18 +174,22 @@ function Channels() {
         })}
       </aside>
       <section className="flex-1 min-w-0 overflow-y-auto">
-        <div className="sticky top-0 z-10 bg-bg/95 backdrop-blur px-6 py-4 border-b border-border flex items-center gap-3">
-          <div className="relative flex-1 max-w-sm">
+        {/* Solid (not backdrop-blur): a backdrop-filter ancestor becomes the containing block for
+            position:fixed, which would break the mobile language bottom-sheet's bottom anchoring. */}
+        <div className="sticky top-0 z-10 bg-bg border-b border-border px-4 sm:px-6 py-3 flex flex-wrap items-center gap-2">
+          <div className="relative flex-1 min-w-[150px] max-w-sm">
             <IconSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-subtle" size={16} />
             <input className="input pl-9" placeholder="Search channels…" value={q} onChange={(e) => setQ(e.target.value)} />
           </div>
+          {/* Phone/tablet category picker — the desktop rail's replacement, as a compact dropdown. */}
+          <div className="md:hidden"><CategoryMenu groups={groups} value={group} onChange={setGroup} favKey={FAV} /></div>
           <QualitySelect value={prefQ} onChange={setPrefQ} />
           <LanguageMenu available={languages} langs={langs} onToggle={toggleLang} onClear={clearLangs} />
         </div>
         {filtered.length === 0 ? (
           <div className="empty-state">{group === FAV ? "No favourites yet — hover a channel and tap the star." : "No channels match."}</div>
         ) : (
-          <div className="grid gap-4 p-6" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))" }}>
+          <div className="grid gap-3 sm:gap-4 p-4 sm:p-6" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))" }}>
             {filtered.map((c) => (
               <div key={c.id} className="relative group">
                 <button onClick={() => nav(`/watch/${c.id}`, { state: { name: c.name } })}
@@ -216,7 +228,7 @@ function Account() {
   };
 
   return (
-    <div className="px-6 py-8">
+    <div className="px-4 sm:px-6 py-6 sm:py-8">
       <div className="mx-auto w-full max-w-6xl">
         <h2 className="mb-5">Account &amp; settings</h2>
         {/* Two independent columns, each stacking its own cards — so there are never uneven-height
@@ -252,13 +264,13 @@ function Account() {
             <div className="card">
               <h3>Sign in to Jio</h3>
               {step === 1 ? (
-                <div className="flex gap-2 mt-3">
-                  <input className="input" inputMode="numeric" placeholder="10-digit mobile number" value={mobile} onChange={(e) => setMobile(e.target.value)} />
+                <div className="flex flex-wrap gap-2 mt-3">
+                  <input className="input flex-1 min-w-[180px]" inputMode="numeric" placeholder="10-digit mobile number" value={mobile} onChange={(e) => setMobile(e.target.value)} />
                   <button className="btn-primary shrink-0" onClick={() => run(async () => { await api.sendOtp(mobile); setStep(2); }, "OTP sent.")}>Send OTP</button>
                 </div>
               ) : (
-                <div className="flex gap-2 mt-3">
-                  <input className="input" inputMode="numeric" placeholder="Enter OTP" value={otp} onChange={(e) => setOtp(e.target.value)} />
+                <div className="flex flex-wrap gap-2 mt-3">
+                  <input className="input flex-1 min-w-[140px]" inputMode="numeric" placeholder="Enter OTP" value={otp} onChange={(e) => setOtp(e.target.value)} />
                   <button className="btn-primary shrink-0" onClick={() => run(async () => { await api.verifyOtp(mobile, otp); setStep(1); setOtp(""); }, "Signed in — all TVs will pick this up.")}>Verify</button>
                   <button className="btn-ghost shrink-0" onClick={() => setStep(1)}>Back</button>
                 </div>
@@ -316,21 +328,28 @@ function CodesCard() {
       <h3>TV access codes</h3>
       <p className="text-muted text-sm mt-1">Short codes to connect each TV. Give one per device so you can revoke it later.</p>
       {codes.length > 0 && (
-        <table className="table mt-4">
-          <thead><tr><th>Name</th><th>Code</th><th></th></tr></thead>
-          <tbody>
-            {codes.map((c) => (
-              <tr key={c.code}>
-                <td>{c.name}</td>
-                <td><span className="font-mono tracking-widest">{c.code}</span></td>
-                <td className="text-right whitespace-nowrap">
-                  <button className="icon-btn !w-8 !h-8 !border-0" title="Copy" onClick={() => copy(c.code)}>{copied === c.code ? <IconCheck className="text-success" /> : <IconCopy />}</button>
-                  <button className="icon-btn !w-8 !h-8 !border-0 hover:!text-error" title="Delete" onClick={async () => { await api.deleteCode(c.code); load(); }}><IconTrash /></button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="overflow-x-auto">
+          <table className="table mt-4 min-w-[320px]">
+            <thead><tr><th>Name</th><th>Code</th><th></th></tr></thead>
+            <tbody>
+              {codes.map((c) => (
+                <tr key={c.code}>
+                  <td>{c.name}</td>
+                  <td><span className="font-mono tracking-widest">{c.code}</span></td>
+                  <td className="text-right whitespace-nowrap">
+                    <button className="icon-btn !w-8 !h-8 !border-0" title="Copy" onClick={() => copy(c.code)}>{copied === c.code ? <IconCheck className="text-success" /> : <IconCopy />}</button>
+                    <button className="icon-btn !w-8 !h-8 !border-0 hover:!text-error" title="Delete" onClick={async () => {
+                      if (!confirm(`Delete code "${c.code}" (${c.name})? A TV using it will stop connecting until you give it a new code.`)) return;
+                      setErr("");
+                      try { await api.deleteCode(c.code); } catch (e: any) { setErr(e.message || "Delete failed"); }
+                      load();
+                    }}><IconTrash /></button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
       <div className="flex flex-wrap items-end gap-2 mt-4">
         <div className="grow min-w-[160px]"><label className="text-sm text-muted">Device name</label><input className="input mt-1" placeholder="e.g. Living Room TV" value={name} onChange={(e) => setName(e.target.value)} /></div>
@@ -455,8 +474,8 @@ function M3uCard() {
 
       <div className="mt-5">
         <label className="text-sm text-muted">Playlist URL · <span className="text-foreground">{matchCount} channels</span></label>
-        <div className="flex gap-2 mt-1">
-          <input className="input font-mono text-xs" readOnly value={url} onFocus={(e) => e.target.select()} />
+        <div className="flex flex-wrap gap-2 mt-1">
+          <input className="input font-mono text-xs flex-1 min-w-[200px]" readOnly value={url} onFocus={(e) => e.target.select()} />
           <button className="btn-secondary shrink-0" onClick={copy}>{copied ? <IconCheck className="text-success" /> : <IconCopy />} {copied ? "Copied" : "Copy"}</button>
           <a className="btn-primary shrink-0" href={url} download="jtv-playlist.m3u"><IconDownload /> Download</a>
         </div>
@@ -489,8 +508,8 @@ function EpgCard() {
         <button className={`tab ${cfg.mode === "xmltv" ? "active" : ""}`} onClick={() => save("xmltv")}>XMLTV</button>
       </div>
       <label className="text-sm text-muted mt-3 block">XMLTV URL</label>
-      <div className="flex gap-2 mt-1">
-        <input className="input font-mono text-sm" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…/epg.xml.gz" />
+      <div className="flex flex-wrap gap-2 mt-1">
+        <input className="input font-mono text-sm flex-1 min-w-[200px]" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…/epg.xml.gz" />
         <button className="btn-secondary shrink-0" onClick={() => save(cfg.mode)}>Save</button>
       </div>
       {cfg.mode === "xmltv" && (
@@ -520,8 +539,8 @@ function HttpsCard() {
         one-time “not private” warning (self-signed certificate).
       </p>
       {info && (
-        <div className="flex items-center gap-2 mt-3">
-          <input className="input font-mono text-sm" readOnly value={url} onFocus={(e) => e.target.select()} />
+        <div className="flex flex-wrap items-center gap-2 mt-3">
+          <input className="input font-mono text-sm flex-1 min-w-[200px]" readOnly value={url} onFocus={(e) => e.target.select()} />
           <a className="btn-secondary shrink-0" href={url} target="_blank" rel="noreferrer">Open</a>
         </div>
       )}

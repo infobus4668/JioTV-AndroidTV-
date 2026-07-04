@@ -47,6 +47,9 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
@@ -84,6 +87,8 @@ fun TvPlayerScreen(
     groups: List<String>,
     onBack: () -> Unit,
     onSettings: () -> Unit = {},
+    variantsFor: (String) -> List<com.fenyx.jtv.data.ChannelLanguage.Variant> = { emptyList() },
+    initialGroup: String? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -92,14 +97,27 @@ fun TvPlayerScreen(
 
     // Saveable so the current channel/group survive leaving the player (e.g. opening full Settings and
     // coming back) instead of resetting to the channel the player was originally launched with.
-    var currentGroup by rememberSaveable { mutableStateOf(channels.firstOrNull()?.group) }
+    // Init from the launch group (which may be the "All"/"Favorites" pseudo-category) NOT the first
+    // channel's real category — otherwise launching from "All" navigated the wrong list and played a
+    // random channel.
+    var currentGroup by rememberSaveable { mutableStateOf(initialGroup) }
     var currentIndex by rememberSaveable { mutableIntStateOf(initialIndex.coerceIn(0, (channels.size - 1).coerceAtLeast(0))) }
-    // Derived from the saved group so it rebuilds correctly after a state restore.
+    // Derived from the saved group so it rebuilds correctly after a state restore. For pseudo-categories
+    // ("All"/"Favorites") there's no per-group entry, so fall back to the passed `channels` list.
     val currentChannels = remember(currentGroup, allChannelsByGroup, channels) {
         val g = currentGroup
         if (g != null) (allChannelsByGroup[g] ?: channels) else channels
     }
     val currentChannel = remember(currentIndex, currentChannels) { currentChannels.getOrNull(currentIndex) }
+
+    // Collapsed per-language feeds for the channel on screen (empty when it isn't a language family).
+    val currentVariants = remember(currentChannel) { currentChannel?.let { variantsFor(it.id) } ?: emptyList() }
+    // When the user picks a different language we play that sibling channel_id without disturbing the
+    // visible channel list. Reset whenever the logical channel changes (a zap). `playingChannel` is
+    // derived lower down, once `language` (the preferred audio language) is in scope.
+    var langOverride by remember { mutableStateOf<Channel?>(null) }
+    LaunchedEffect(currentChannel) { langOverride = null }
+    var showLangSelector by remember { mutableStateOf(false) }
 
     var showOverlay by remember { mutableStateOf(true) }
     var showChannelList by remember { mutableStateOf(false) }
@@ -108,6 +126,9 @@ fun TvPlayerScreen(
     
     val settingsManager = remember { SettingsManager(context) }
     val favoriteChannels by settingsManager.favoriteChannelsFlow.collectAsState(initial = emptySet())
+    val playerSetupMode by settingsManager.setupModeFlow.collectAsState(initial = null)
+    // "Refresh Login" (server mode) state shown in the right-side overlay.
+    var refreshingCreds by remember { mutableStateOf(false) }
 
     // Auto-hide overlay
     LaunchedEffect(showOverlay) {
@@ -120,6 +141,14 @@ fun TvPlayerScreen(
     var quality by remember { mutableStateOf("auto") }
     var language by remember { mutableStateOf("hi") }
     var resizeMode by remember { mutableIntStateOf(0) }
+
+    // Follow the user's Default Audio Language: for a collapsed family, auto-select the matching
+    // language feed unless the user has manually overridden it for this channel. The feed actually
+    // sent to the player is: manual override, else preferred-language feed, else the logical channel.
+    val preferredVariant = remember(currentVariants, language) {
+        currentVariants.firstOrNull { it.langCode == language }?.channel
+    }
+    val playingChannel = langOverride ?: preferredVariant ?: currentChannel
     
     var showAudioSelector by remember { mutableStateOf(false) }
     var showQualitySelector by remember { mutableStateOf(false) }
@@ -155,6 +184,10 @@ fun TvPlayerScreen(
     // so a long session can recover indefinitely instead of dying after a fixed number of errors.
     val retryCount = remember { mutableIntStateOf(0) }
     var streamRefreshTrigger by remember { mutableIntStateOf(0) }
+    // Bumping this re-attaches the audio effect (see the buffering watchdog + AudioEnhancer) to kick a
+    // stalled AudioTrack alive without touching the stream.
+    var audioKick by remember { mutableIntStateOf(0) }
+    val kickCount = remember { mutableIntStateOf(0) }
 
     // Player-affecting prefs. Read reactively (NEVER block the main thread here — doing so caused
     // jank/black-screen on entry). Tunneling is applied live via track-selection params below; the
@@ -164,7 +197,7 @@ fun TvPlayerScreen(
     val bufferSecPref by settingsManager.playbackBufferSecFlow.collectAsState(initial = 60)
 
     // Audio enhancement settings + the effect engine.
-    val voiceBoost by settingsManager.voiceBoostFlow.collectAsState(initial = 0)
+    val voiceBoost by settingsManager.voiceBoostFlow.collectAsState(initial = 2)
     val audioNormalize by settingsManager.audioNormalizeFlow.collectAsState(initial = false)
     // LoudnessEnhancer handles makeup loudness; the dialogue processor does center-channel voice
     // isolation. The processor is stable across player rebuilds and reads its level live.
@@ -261,6 +294,11 @@ fun TvPlayerScreen(
         val listener = object : Player.Listener {
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
                 val opts = mutableListOf<AudioOption>()
+                // Diagnostic: log EVERY audio track the loaded manifest exposes, including ones the
+                // device can't decode (adaptiveSupported/isSupported), so "missing language" reports can
+                // be traced to (a) not present in the stream, or (b) unsupported codec. Filter logcat by
+                // tag "TvPlayerAudio".
+                val diag = StringBuilder()
                 for (g in tracks.groups) {
                     if (g.type == androidx.media3.common.C.TRACK_TYPE_AUDIO) {
                         for (i in 0 until g.length) {
@@ -272,10 +310,16 @@ fun TvPlayerScreen(
                                         .getOrNull()?.replaceFirstChar { c -> c.uppercase() }
                                 }
                                 ?: "Audio ${i + 1}"
+                            diag.append("\n  [${lang ?: "?"}] label=${f.label} codec=${f.codecs ?: f.sampleMimeType} " +
+                                "ch=${f.channelCount} supported=${g.isTrackSupported(i)} selected=${g.isTrackSelected(i)}")
+                            // Keep offering every track (don't hide unsupported ones — that would look
+                            // like the language is "missing"); the log records support so we can tell
+                            // whether a silent track is an unsupported codec vs. genuinely absent.
                             opts.add(AudioOption(label, g.mediaTrackGroup, i, g.isTrackSelected(i)))
                         }
                     }
                 }
+                android.util.Log.d("TvPlayerAudio", "audio tracks (${opts.size} playable):$diag")
                 audioTracks = opts
             }
             override fun onPlaybackStateChanged(state: Int) {
@@ -311,15 +355,20 @@ fun TvPlayerScreen(
         onDispose { exoPlayer.removeListener(listener) }
     }
 
-    LaunchedEffect(currentChannel, quality) {
-        retryCount.intValue = 0 // Reset retries on intentional channel or quality change
+    LaunchedEffect(playingChannel, quality) {
+        retryCount.intValue = 0 // Reset retries on intentional channel/language/quality change
         playbackError = null
     }
 
-    LaunchedEffect(currentChannel, quality, streamRefreshTrigger) {
-        val ch = currentChannel
+    // Keyed on exoPlayer too: if the player is rebuilt (e.g. saved buffer/decoder/tunneling prefs load
+    // a moment after open, or the hardware-decoder toggle changes), the NEW instance must be given the
+    // media source — otherwise it buffers forever until some other change re-triggers this. That was the
+    // "loads until I change a setting" bug.
+    LaunchedEffect(exoPlayer, playingChannel, quality, streamRefreshTrigger) {
+        val ch = playingChannel
         if (ch != null) {
-            settingsManager.setLastChannelId(ch.id)
+            // Persist the representative (logical) channel for autoplay, not the language sibling.
+            currentChannel?.let { settingsManager.setLastChannelId(it.id) }
             settingsManager.setLastChannelGroup(currentGroup)
             isBuffering = true
             exoPlayer.stop()
@@ -377,12 +426,22 @@ fun TvPlayerScreen(
                     userPaused = false // a new channel always starts playing
                 }
             } else {
-                android.util.Log.e("TvPlayer", "Failed to fetch stream: ${result.exceptionOrNull()?.message}")
+                val fetchErr = result.exceptionOrNull()?.message ?: ""
+                android.util.Log.e("TvPlayer", "Failed to fetch stream: $fetchErr")
                 // Let the auto-recovery budget retry transient fetch failures; only show the error
                 // once it's exhausted, so a one-off hiccup doesn't flash a message.
                 if (retryCount.intValue >= 5) {
                     isBuffering = false
-                    playbackError = "Couldn't load this channel. Press OK to retry."
+                    // A persistent 401/403 after the built-in credential refresh means the upstream
+                    // Jio login is dead — retrying won't help. In server/JTV mode that's fixed by
+                    // re-logging-in the Jio account on the server, so say so instead of "press OK".
+                    val authExpired = fetchErr.contains("401") || fetchErr.contains("403")
+                    playbackError = when {
+                        authExpired && (playerSetupMode == "server" || playerSetupMode == "jtv") ->
+                            "Server login expired. Re-login the Jio account on your JTV server, then press OK."
+                        authExpired -> "Login expired. Please sign in again."
+                        else -> "Couldn't load this channel. Press OK to retry."
+                    }
                 } else {
                     retryCount.intValue++
                     delay(800L * retryCount.intValue)
@@ -392,12 +451,46 @@ fun TvPlayerScreen(
         }
     }
 
+    // Buffering watchdog. A stuck first load (common right after setup: the stream is fetched and
+    // prepare()d, but playback never leaves STATE_BUFFERING and no PlaybackException is thrown, so the
+    // onPlayerError retry path can't fire) used to sit on the spinner forever until the user changed a
+    // player setting by hand. The real cause is the AudioTrack for our explicit audio session not
+    // starting until an audio effect is bound (see AudioEnhancer) — so recovery ESCALATES:
+    //   1) re-attach the audio effect (audioKick) — the same thing the manual "Voice Boost" toggle did;
+    //   2) if that still doesn't help, re-fetch the stream URL (streamRefreshTrigger);
+    //   3) finally, surface an actionable error instead of an endless spinner.
+    // Reset per channel so every zap gets a fresh recovery budget.
+    LaunchedEffect(playingChannel) { kickCount.intValue = 0 }
+    LaunchedEffect(isBuffering, playingChannel, streamRefreshTrigger, audioKick) {
+        if (isBuffering && playingChannel != null && playbackError == null && !userPaused) {
+            delay(6_000)
+            if (isBuffering && playbackError == null && !userPaused) {
+                when {
+                    kickCount.intValue < 3 -> {
+                        kickCount.intValue++
+                        android.util.Log.d("TvPlayer", "Buffering watchdog: audio kick ${kickCount.intValue}")
+                        audioKick++
+                    }
+                    retryCount.intValue < 5 -> {
+                        retryCount.intValue++
+                        android.util.Log.d("TvPlayer", "Buffering watchdog: re-fetch ${retryCount.intValue}")
+                        streamRefreshTrigger++
+                    }
+                    else -> {
+                        isBuffering = false
+                        playbackError = "Playback stopped. Press OK to retry."
+                    }
+                }
+            }
+        }
+    }
+
     // ─── Transparent token refresh ───
     // The Jio `__hdnea__` token expires ~120s after issue. This loop fetches a fresh stream URL a few
     // seconds BEFORE expiry and publishes the new token to tokenHolder, so the ResolvingDataSource
     // keeps rewriting requests with a valid token. Playback never sees a 403 -> no reload, no buffering.
-    LaunchedEffect(currentChannel) {
-        val ch = currentChannel ?: return@LaunchedEffect
+    LaunchedEffect(playingChannel) {
+        val ch = playingChannel ?: return@LaunchedEffect
         while (true) {
             val token = tokenHolder.get()
             val expSec = com.fenyx.jtv.data.JioApiClient.extractTokenExpiryEpochSec(token)
@@ -427,7 +520,7 @@ fun TvPlayerScreen(
     LaunchedEffect(voiceBoost) {
         dialogueProcessor.setLevel(voiceBoost)
     }
-    LaunchedEffect(audioSessionId, voiceBoost, audioNormalize) {
+    LaunchedEffect(audioSessionId, voiceBoost, audioNormalize, audioKick) {
         audioEnhancer.apply(audioSessionId, audioNormalize, voiceBoost)
     }
     DisposableEffect(Unit) {
@@ -441,11 +534,28 @@ fun TvPlayerScreen(
         }
     }
 
-    // Current time
+    // Stop playback when the app is backgrounded (Home / app switch) so audio doesn't keep playing in
+    // the background, and resume when it returns to the foreground (unless the user had paused).
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val userPausedState = rememberUpdatedState(userPaused)
+    DisposableEffect(lifecycleOwner, exoPlayer) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP -> exoPlayer.pause()
+                Lifecycle.Event.ON_START -> if (!userPausedState.value) exoPlayer.play()
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // Current time. Formatter is hoisted (was reallocated on every 30s tick).
+    val clockFormat = remember { SimpleDateFormat("hh:mm a", Locale.getDefault()) }
     var currentTime by remember { mutableStateOf("") }
     LaunchedEffect(Unit) {
         while (true) {
-            currentTime = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date())
+            currentTime = clockFormat.format(Date())
             delay(30000)
         }
     }
@@ -491,7 +601,7 @@ fun TvPlayerScreen(
                     keyEvent.key == Key.NumPadEnter
                 val normalWatching = !showCategoryList && !showChannelList &&
                     !showAudioSelector && !showQualitySelector && !showSettingsOverlay &&
-                    !showNumericOverlay && playbackError == null
+                    !showLangSelector && !showNumericOverlay && playbackError == null
                 if (isCenter && normalWatching) {
                     when (keyEvent.type) {
                         KeyEventType.KeyDown -> {
@@ -543,6 +653,7 @@ fun TvPlayerScreen(
 
                     if (keyEvent.key == Key.Back || keyEvent.key == Key.Escape) {
                         if (showAudioSelector) { showAudioSelector = false; return@onPreviewKeyEvent true }
+                        if (showLangSelector) { showLangSelector = false; return@onPreviewKeyEvent true }
                         if (showQualitySelector) { showQualitySelector = false; return@onPreviewKeyEvent true }
                         if (showSettingsOverlay) { showSettingsOverlay = false; return@onPreviewKeyEvent true }
                         if (showCategoryList) { showCategoryList = false; return@onPreviewKeyEvent true }
@@ -660,6 +771,47 @@ fun TvPlayerScreen(
                             else if (showChannelList) { showChannelList = false; true }
                             else if (showOverlay) { showOverlay = false; true }
                             else { onBack(); true }
+                        }
+                        // ── Standard TV media remote keys ──
+                        // Play/Pause toggle from the dedicated remote key.
+                        Key.MediaPlayPause -> {
+                            if (userPaused) { exoPlayer.play(); userPaused = false }
+                            else { exoPlayer.pause(); userPaused = true; showOverlay = true }
+                            true
+                        }
+                        Key.MediaPlay -> {
+                            if (userPaused) { exoPlayer.play(); userPaused = false }
+                            true
+                        }
+                        Key.MediaPause -> {
+                            exoPlayer.pause(); userPaused = true; showOverlay = true
+                            true
+                        }
+                        // MEDIA_NEXT/PREVIOUS zap channels like CH+/-.
+                        Key.MediaNext -> {
+                            if (currentChannels.isNotEmpty() && !showSettingsOverlay) {
+                                currentIndex = (currentIndex + 1) % currentChannels.size
+                                showOverlay = true
+                            }
+                            true
+                        }
+                        Key.MediaPrevious -> {
+                            if (currentChannels.isNotEmpty() && !showSettingsOverlay) {
+                                currentIndex = (currentIndex - 1 + currentChannels.size) % currentChannels.size
+                                showOverlay = true
+                            }
+                            true
+                        }
+                        // GUIDE opens the channel list; INFO toggles the now-playing banner.
+                        Key.Guide -> {
+                            if (!showSettingsOverlay) { showChannelList = true; showOverlay = true }
+                            true
+                        }
+                        Key.Info -> {
+                            if (!showChannelList && !showCategoryList && !showSettingsOverlay) {
+                                showOverlay = !showOverlay
+                            }
+                            true
                         }
                         else -> false
                     }
@@ -928,6 +1080,20 @@ fun TvPlayerScreen(
                     
                     Spacer(modifier = Modifier.height(16.dp))
                     
+                    // Language-feed switch for collapsed channel families (e.g. Star Sports Hindi/Tamil).
+                    // Selecting a language reloads that sibling feed. Distinct from in-stream audio tracks.
+                    if (currentVariants.size > 1) {
+                        val curLang = currentVariants.firstOrNull { it.channel.id == playingChannel?.id }?.langCode
+                        SettingsItem(
+                            title = "Language",
+                            subtitle = "Switch language feed for this channel",
+                            value = com.fenyx.jtv.data.ChannelLanguage.displayName(curLang),
+                            valueColor = TvPrimary,
+                            onClick = { showLangSelector = true }
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                    }
+
                     SettingsItem(
                         title = "Audio Track / Language",
                         subtitle = audioTracks.firstOrNull { it.selected }?.label?.let { "Current: $it" } ?: "Default",
@@ -982,6 +1148,31 @@ fun TvPlayerScreen(
                     )
 
                     Spacer(modifier = Modifier.height(16.dp))
+
+                    // Server mode: force a credential re-pull from the proxy and reload the stream, so a
+                    // rotated/expired shared token can be fixed without leaving the player.
+                    if (playerSetupMode == "server" || playerSetupMode == "jtv") {
+                        SettingsItem(
+                            title = "Refresh Login",
+                            subtitle = "Fetch fresh credentials from your server",
+                            value = if (refreshingCreds) "Refreshing…" else "Refresh",
+                            valueColor = TvPrimary,
+                            onClick = {
+                                if (!refreshingCreds) scope.launch {
+                                    refreshingCreds = true
+                                    com.fenyx.jtv.data.JioApiClient.refreshCredentials(context)
+                                    refreshingCreds = false
+                                    // Reload the current stream with the fresh credentials.
+                                    retryCount.intValue = 0
+                                    playbackError = null
+                                    isBuffering = true
+                                    streamRefreshTrigger++
+                                    showSettingsOverlay = false
+                                }
+                            }
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                    }
 
                     SettingsItem(
                         title = "Open Settings",
@@ -1064,6 +1255,30 @@ fun TvPlayerScreen(
                         onDismiss = { showAudioSelector = false }
                     )
                 }
+            }
+        }
+
+        if (showLangSelector) {
+            Dialog(onDismissRequest = { showLangSelector = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+                val opts = currentVariants.map { it.channel.id to com.fenyx.jtv.data.ChannelLanguage.displayName(it.langCode) }
+                TvPickerDialog(
+                    title = "Channel Language",
+                    options = opts,
+                    currentValue = playingChannel?.id ?: "",
+                    onSelect = { value ->
+                        val v = currentVariants.firstOrNull { it.channel.id == value }
+                        if (v != null) {
+                            langOverride = v.channel
+                            // Remember the chosen language so other channels + this one default to it.
+                            v.langCode?.let { lc ->
+                                language = lc
+                                scope.launch { settingsManager.setDefaultLanguage(lc) }
+                            }
+                        }
+                        showLangSelector = false
+                    },
+                    onDismiss = { showLangSelector = false }
+                )
             }
         }
 

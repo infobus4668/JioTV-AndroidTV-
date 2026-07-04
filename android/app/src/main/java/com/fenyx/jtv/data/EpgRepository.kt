@@ -53,31 +53,37 @@ class EpgRepository(private val context: Context) {
         if (forceRefresh || !cacheFile.exists() || (System.currentTimeMillis() - cacheFile.lastModified() > twelveHoursMs)) {
             Log.d(TAG, "Downloading EPG from $urlStr")
             _syncStatus.value = EpgSyncStatus.DOWNLOADING
+            var connection: HttpURLConnection? = null
             try {
                 var redirectCount = 0
                 var currentUrlStr = urlStr
-                var connection: HttpURLConnection? = null
-                
+
                 while (redirectCount < 5) {
                     val url = URL(currentUrlStr)
-                    connection = url.openConnection() as HttpURLConnection
-                    connection.requestMethod = "GET"
-                    connection.instanceFollowRedirects = false
-                    connection.connectTimeout = 15000
-                    connection.readTimeout = 30000
-                    connection.setRequestProperty("User-Agent", "Mozilla/5.0")
-                    
-                    val responseCode = connection.responseCode
-                    if (responseCode == HttpURLConnection.HTTP_MOVED_PERM || 
-                        responseCode == HttpURLConnection.HTTP_MOVED_TEMP || 
+                    val conn = url.openConnection() as HttpURLConnection
+                    conn.requestMethod = "GET"
+                    conn.instanceFollowRedirects = false
+                    conn.connectTimeout = 15000
+                    conn.readTimeout = 30000
+                    conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+
+                    val responseCode = conn.responseCode
+                    if (responseCode == HttpURLConnection.HTTP_MOVED_PERM ||
+                        responseCode == HttpURLConnection.HTTP_MOVED_TEMP ||
                         responseCode == 307 || responseCode == 308) {
-                        currentUrlStr = connection.getHeaderField("Location") ?: break
+                        val location = conn.getHeaderField("Location")
+                        // Release the intermediate connection before following the redirect, otherwise
+                        // each hop leaks a socket (real cost on a low-RAM TV over a chain of shorteners).
+                        conn.disconnect()
+                        if (location == null) break
+                        currentUrlStr = location
                         redirectCount++
                     } else {
+                        connection = conn
                         break
                     }
                 }
-                
+
                 if (connection != null && connection.responseCode in 200..299) {
                     // Detect gzip by the actual content (magic bytes 0x1f 0x8b) rather than the URL
                     // suffix. URL shorteners / redirects (e.g. the default short.gy link) often resolve
@@ -107,6 +113,8 @@ class EpgRepository(private val context: Context) {
             } catch (e: Exception) {
                 Log.e(TAG, "Error downloading EPG", e)
                 _syncStatus.value = EpgSyncStatus.ERROR
+            } finally {
+                connection?.disconnect()
             }
         }
 
@@ -201,9 +209,10 @@ class EpgRepository(private val context: Context) {
     }
 
     suspend fun getNativeEpgForChannel(channelId: String): List<EpgProgram> = withContext(Dispatchers.IO) {
+        var connection: HttpURLConnection? = null
         try {
             val url = URL("https://jiotvapi.cdn.jio.com/apis/v1.3/getepg/get?offset=0&channel_id=$channelId&langId=6")
-            val connection = url.openConnection() as HttpURLConnection
+            connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "GET"
             connection.connectTimeout = 10000
             connection.readTimeout = 15000
@@ -227,6 +236,8 @@ class EpgRepository(private val context: Context) {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to fetch native EPG for $channelId", e)
+        } finally {
+            connection?.disconnect()
         }
         return@withContext emptyList()
     }

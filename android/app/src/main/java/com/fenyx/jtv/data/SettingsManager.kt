@@ -20,7 +20,7 @@ class SettingsManager(private val context: Context) {
         private val HARDWARE_DECODER = booleanPreferencesKey("hardware_decoder")
         private val TUNNELING = booleanPreferencesKey("tunneling_enabled")
         private val PLAYBACK_BUFFER_SEC = intPreferencesKey("playback_buffer_sec")
-        private val VOICE_BOOST = intPreferencesKey("voice_boost")          // 0=off,1=low,2=high
+        private val VOICE_BOOST = intPreferencesKey("voice_boost")          // 0=off,1=low,2=medium,3=high,4=max
         private val AUDIO_NORMALIZE = booleanPreferencesKey("audio_normalize")
         private val REDUCE_BACKGROUND = booleanPreferencesKey("reduce_background")
         private val BUFFER_SIZE = intPreferencesKey("buffer_size")
@@ -29,6 +29,9 @@ class SettingsManager(private val context: Context) {
         private val LAST_UPDATE_CHECK = stringPreferencesKey("last_update_check_timestamp")
         private val PLAYER_RESIZE_MODE = intPreferencesKey("player_resize_mode")
         
+        // Collapse per-language duplicate channels (e.g. "Star Sports 1 Hindi/Tamil/Telugu") into one.
+        private val GROUP_LANGUAGE_VARIANTS = booleanPreferencesKey("group_language_variants")
+
         private val EPG_MODE = booleanPreferencesKey("epg_mode")
         private val EPG_URL = stringPreferencesKey("epg_url")
         private val FAVORITE_CHANNELS = stringPreferencesKey("favorite_channels")
@@ -92,9 +95,10 @@ class SettingsManager(private val context: Context) {
         preferences[PLAYBACK_BUFFER_SEC] ?: 60
     }
 
-    // Audio enhancement (applied via AudioEffects on the player session).
+    // Audio enhancement (applied via AudioEffects on the player session). Defaults to 2 (Medium) so
+    // dialogue is clearer out of the box; users who explicitly set a level (incl. 0/Off) keep theirs.
     val voiceBoostFlow: Flow<Int> = context.dataStore.data.map { preferences ->
-        preferences[VOICE_BOOST] ?: 0
+        preferences[VOICE_BOOST] ?: 2
     }
     val audioNormalizeFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
         preferences[AUDIO_NORMALIZE] ?: false
@@ -121,6 +125,11 @@ class SettingsManager(private val context: Context) {
 
     val playerResizeModeFlow: Flow<Int> = context.dataStore.data.map { preferences ->
         preferences[PLAYER_RESIZE_MODE] ?: 0 // Default: RESIZE_MODE_FIT
+    }
+
+    // On by default: most users want one tile per channel and pick language in the player.
+    val groupLanguageVariantsFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[GROUP_LANGUAGE_VARIANTS] ?: true
     }
 
     val epgModeFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
@@ -235,6 +244,10 @@ class SettingsManager(private val context: Context) {
         context.dataStore.edit { preferences ->
             preferences[PLAYER_RESIZE_MODE] = mode
         }
+    }
+
+    suspend fun setGroupLanguageVariants(enabled: Boolean) {
+        context.dataStore.edit { preferences -> preferences[GROUP_LANGUAGE_VARIANTS] = enabled }
     }
 
     suspend fun setEpgMode(enabled: Boolean) {

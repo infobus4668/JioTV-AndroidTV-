@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <!-- Dark, full-screen theme for a TV app. A black window background prevents the white flash
-         that the previous Light theme showed during cold start (it read as "slow loading"). -->
+    <!-- Dark, full-screen theme for a TV app. The window background matches the app's own background
+         (TvDarkBackground #0D1117), NOT pure black — otherwise any area the Compose UI doesn't cover
+         (e.g. the region left when the on-screen keyboard opens) shows as a black bar against the navy
+         UI. A dark window background still prevents the cold-start white flash. -->
     <style name="Theme.JioTVGoTV" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">@android:color/black</item>
-        <item name="android:colorBackground">@android:color/black</item>
+        <item name="android:windowBackground">#FF0D1117</item>
+        <item name="android:colorBackground">#FF0D1117</item>
     </style>
 </resources>

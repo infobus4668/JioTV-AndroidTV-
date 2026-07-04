@@ -210,6 +210,29 @@ object JioApiClient {
         }
     }
 
+    /**
+     * Refreshes the stored Jio credentials, choosing the right mechanism for the sign-in method:
+     *  - **server mode**: re-pull the centrally-refreshed credentials from the proxy server (the app has
+     *    no Jio refreshToken in this mode). This is what makes a server-mode TV self-heal instead of
+     *    silently failing once the shared token rotates.
+     *  - **phone mode**: use Jio's own refreshtoken endpoint ([refreshToken]).
+     */
+    suspend fun refreshCredentials(context: android.content.Context): Result<Boolean> {
+        val settingsManager = com.fenyx.jtv.data.SettingsManager(context)
+        val mode = settingsManager.setupModeFlow.first()
+        return if (mode == "server" || mode == "jtv") {
+            val urls = ServerClient.candidateUrls(mode, settingsManager.serverUrlFlow.first())
+            val tok = settingsManager.serverTokenFlow.first()
+            if (urls.all { it.isBlank() }) return Result.failure(Exception("No server configured"))
+            ServerClient.refreshCredentials(urls, tok).fold(
+                onSuccess = { auth -> settingsManager.saveAuthData(auth); Result.success(true) },
+                onFailure = { Result.failure(it) }
+            )
+        } else {
+            refreshToken(context)
+        }
+    }
+
     private const val CHANNEL_CACHE_FILE = "channels_cache.json"
     const val CHANNEL_CACHE_TTL_MS = 24 * 60 * 60 * 1000L // 24 hours
 
@@ -462,8 +485,10 @@ object JioApiClient {
             if ((responseCode == 401 || responseCode == 403 || responseCode == 419) && allowRefreshRetry) {
                 // Token might be expired, try to refresh exactly once (allowRefreshRetry = false on the
                 // recursive call) so a persistently-failing token can never cause infinite recursion.
+                // In server mode this re-pulls fresh credentials from the proxy; in phone mode it uses
+                // Jio's refreshtoken endpoint.
                 Log.d(TAG, "Token expired, attempting refresh...")
-                val refreshResult = refreshToken(context)
+                val refreshResult = refreshCredentials(context)
                 if (refreshResult.isSuccess) {
                     val settingsManager = com.fenyx.jtv.data.SettingsManager(context)
                     val newAuthData = settingsManager.authDataFlow.first()

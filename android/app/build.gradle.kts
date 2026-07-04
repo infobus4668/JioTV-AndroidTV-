@@ -21,8 +21,8 @@ android {
         applicationId = "com.fenyx.jtv"
         minSdk = 24          // Android 7.0 — comfortably covers the user's Android 10 TV
         targetSdk = 36       // Android 16 (latest)
-        versionCode = 9
-        versionName = "1.4.3"
+        versionCode = 10
+        versionName = "1.4.4"
     }
 
     signingConfigs {
@@ -108,8 +108,9 @@ dependencies {
   implementation(libs.androidx.navigation3.runtime)
   implementation(libs.androidx.lifecycle.viewmodel.navigation3)
 
-  // TV Compose
-  implementation(libs.androidx.tv.foundation)
+  // TV Compose. Note: androidx.tv.foundation is deprecated — its lazy layouts were folded into
+  // androidx.compose.foundation 1.7+, which we use directly (LazyColumn/LazyVerticalGrid +
+  // Modifier.focusRestorer). Only androidx.tv.material3 is needed for TV-tuned components.
   implementation(libs.androidx.tv.material)
 
   // Media3 ExoPlayer

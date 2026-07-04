@@ -3,7 +3,7 @@ import { useParams, useLocation, useNavigate } from "react-router-dom";
 import shaka from "shaka-player/dist/shaka-player.compiled";
 import Hls from "hls.js";
 import { api, type EpgProgram } from "./api";
-import { DateTabs, dayList, sameDay } from "./dates";
+import { DateTabs, daysFromPrograms, sameDay } from "./dates";
 
 /* ── watch page (player + details + catch-up) ──────────────────────────── */
 export function WatchPage() {
@@ -13,10 +13,11 @@ export function WatchPage() {
   const name = location.state?.name ?? `Channel ${id}`;
 
   const [programs, setPrograms] = useState<EpgProgram[]>([]);
-  const [cid, setCid] = useState(id);          // live = id; catch-up = `${id}~${beginSec}`
+  const [cid, setCid] = useState(id);          // live = id; catch-up = `cu.<base64>`
   const [catchTitle, setCatchTitle] = useState<string | null>(null);
+  const [playingStart, setPlayingStart] = useState<number | null>(null); // null = live; else the catch-up show's startMs
 
-  useEffect(() => { setCid(id); setCatchTitle(null); api.epg(id).then((r) => setPrograms(r.programs)).catch(() => setPrograms([])); }, [id]);
+  useEffect(() => { setCid(id); setCatchTitle(null); setPlayingStart(null); api.epg(id).then((r) => setPrograms(r.programs)).catch(() => setPrograms([])); }, [id]);
 
   const now = Date.now();
   const current = useMemo(() => programs.find((p) => p.startMs <= now && p.stopMs > now), [programs, now]);
@@ -25,12 +26,12 @@ export function WatchPage() {
     // Encode everything getStreamData needs for a Catchup request into the playback key.
     const payload = { c: id, s: p.srno ?? "", p: p.showId ?? "", b: p.startMs, e: p.stopMs, t: p.showtime ?? "" };
     const b64 = btoa(JSON.stringify(payload)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-    setCid(`cu.${b64}`); setCatchTitle(p.title);
+    setCid(`cu.${b64}`); setCatchTitle(p.title); setPlayingStart(p.startMs);
   };
-  const goLive = () => { setCid(id); setCatchTitle(null); };
+  const goLive = () => { setCid(id); setCatchTitle(null); setPlayingStart(null); };
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
+    <div className="p-4 sm:p-6 max-w-6xl mx-auto">
       <button className="btn-ghost btn-sm mb-4" onClick={() => nav("/channels")}>← Channels</button>
       <div className="grid lg:grid-cols-[1fr_340px] gap-6 items-start">
         <div className="min-w-0">
@@ -54,7 +55,7 @@ export function WatchPage() {
         </div>
 
         <aside>
-          <ProgrammeGuide programs={programs} onCatchup={playCatchup} onLive={goLive} />
+          <ProgrammeGuide programs={programs} playingStart={playingStart} onCatchup={playCatchup} onLive={goLive} />
         </aside>
       </div>
     </div>
@@ -63,21 +64,24 @@ export function WatchPage() {
 
 function fmt(ms: number) { return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
 
-/** A scannable vertical programme guide with a day picker; past shows are catch-up (if available). */
-function ProgrammeGuide({ programs, onCatchup, onLive }: { programs: EpgProgram[]; onCatchup: (p: EpgProgram) => void; onLive: () => void }) {
+/** A scannable vertical programme guide with a day picker; past shows are catch-up. The row that's
+ *  actually playing (live OR a selected catch-up) is highlighted, not just the on-air show. */
+function ProgrammeGuide({ programs, playingStart, onCatchup, onLive }: { programs: EpgProgram[]; playingStart: number | null; onCatchup: (p: EpgProgram) => void; onLive: () => void }) {
   const now = Date.now();
   const [day, setDay] = useState(0);
-  const days = useMemo(dayList, []);
-  const selDate = days.find((d) => d.key === day)?.date ?? new Date();
-  const dayPrograms = useMemo(() => programs.filter((p) => sameDay(p.startMs, selDate)), [programs, day]);
-  const nowRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => { if (day === 0) nowRef.current?.scrollIntoView({ block: "center" }); }, [dayPrograms.length, day]);
+  const days = useMemo(() => daysFromPrograms(programs), [programs]);
+  // If the chosen day isn't in the data (e.g. after switching channels), fall back to the newest day.
+  const activeDay = days.some((d) => d.key === day) ? day : (days[0]?.key ?? 0);
+  const selDate = days.find((d) => d.key === activeDay)?.date ?? new Date();
+  const dayPrograms = useMemo(() => programs.filter((p) => sameDay(p.startMs, selDate)), [programs, activeDay]);
+  const playingRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => { playingRef.current?.scrollIntoView({ block: "center" }); }, [dayPrograms.length, activeDay, playingStart]);
 
   return (
     <div className="card !p-0 overflow-hidden">
       <div className="px-4 py-3 border-b border-border">
-        <h3 className="text-base mb-2">Programme guide</h3>
-        <div className="overflow-x-auto no-scrollbar"><DateTabs value={day} onChange={setDay} /></div>
+        <h3 className="text-base">Programme guide</h3>
+        {days.length > 1 && <div className="mt-2 overflow-x-auto no-scrollbar"><DateTabs days={days} value={activeDay} onChange={setDay} /></div>}
       </div>
       <div className="max-h-[58vh] overflow-y-auto">
         {dayPrograms.length === 0 ? (
@@ -85,21 +89,27 @@ function ProgrammeGuide({ programs, onCatchup, onLive }: { programs: EpgProgram[
         ) : dayPrograms.map((p) => {
           const isNow = p.startMs <= now && p.stopMs > now;
           const isPast = p.stopMs <= now;
+          const watchingCatchup = playingStart != null;
+          // The row that's actually on screen: the selected catch-up, or (when live) the on-air show.
+          const isActive = watchingCatchup ? p.startMs === playingStart : isNow;
           const dur = Math.max(1, Math.round((p.stopMs - p.startMs) / 60000));
           const prog = isNow ? Math.min(1, (now - p.startMs) / (p.stopMs - p.startMs)) : 0;
-          const canCatchup = isPast && !!p.catchup;
+          // Jio's `isCatchupAvailable` flag is unreliable (often false when catch-up actually works),
+          // so we offer catch-up for every past show — the Catchup request resolves regardless.
+          const canCatchup = isPast;
           const clickable = isNow || canCatchup;
           return (
-            <button key={p.startMs} ref={isNow ? nowRef : undefined} disabled={!clickable}
+            <button key={p.startMs} ref={isActive ? playingRef : undefined} disabled={!clickable}
               onClick={() => (isNow ? onLive() : onCatchup(p))}
-              style={isNow ? { background: "var(--accent-soft)" } : undefined}
+              style={isActive ? { background: "var(--accent-soft)" } : undefined}
               className={`w-full text-left px-4 py-3 flex gap-3 border-b border-border last:border-0 transition-colors ${clickable ? "hover:bg-surface-hover cursor-pointer" : "opacity-55 cursor-default"}`}>
-              <div className={`w-14 shrink-0 text-sm tabular-nums ${isNow ? "text-accent font-medium" : "text-muted"}`}>{fmt(p.startMs)}</div>
+              <div className={`w-14 shrink-0 text-sm tabular-nums ${isActive ? "text-accent font-medium" : "text-muted"}`}>{fmt(p.startMs)}</div>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="text-sm truncate">{p.title}</span>
+                  {watchingCatchup && isActive && <span className="badge badge-accent shrink-0">▶ Playing</span>}
                   {isNow && <span className="badge badge-accent shrink-0">ON NOW</span>}
-                  {canCatchup && <span className="badge shrink-0">Catch-up</span>}
+                  {canCatchup && !isActive && <span className="badge shrink-0">Catch-up</span>}
                 </div>
                 <div className="text-subtle text-xs mt-0.5">{fmt(p.startMs)}–{fmt(p.stopMs)} · {dur}m</div>
                 {isNow && <div className="progress mt-2"><div className="bar" style={{ width: `${prog * 100}%` }} /></div>}
@@ -179,7 +189,7 @@ function PlayerBox({ cid, title }: { cid: string; title: string }) {
           };
           hls.on(Hls.Events.ERROR, (_e, data) => {
             console.error("[hls.js]", data.type, data.details, data.reason ?? "", data.error ?? "", data);
-            if (data.fatal && !cancelled) setError(hlsMessage(data));
+            if (data.fatal && !cancelled) setError(isCatchup ? "Catch-up isn’t available for this show — Jio didn’t return a playable recording. Most other shows work." : hlsMessage(data));
           });
           hls.on(Hls.Events.MANIFEST_PARSED, () => {
             if (cancelled) return;
@@ -300,21 +310,25 @@ function PlayerBox({ cid, title }: { cid: string; title: string }) {
         {error && (
           <div className="card bg-surface max-w-sm mx-3 text-center pointer-events-auto">
             <div className={`font-semibold text-sm ${notEntitled ? "text-warning" : "text-error"}`}>{error}</div>
-            <p className="text-muted text-xs mt-2">
-              {notEntitled
-                ? "Jio returned a paywall fallback for this channel — your account doesn’t have the pack that includes it. Free/subscribed channels play fine."
-                : location.protocol !== "https:" && location.hostname !== "localhost"
-                  ? "For DRM channels, open the server’s https:// URL (Account → HTTPS)."
-                  : "If this is a DRM channel, it likely needs hardware DRM (L1), which desktop browsers can’t decrypt — it plays on the TV app."}
-            </p>
+            {(() => {
+              // Suppress the generic hint when the message already explains itself (unavailable / blocked
+              // / catch-up / needs-https / not-in-plan), so we don't wrongly blame DRM/L1.
+              if (notEntitled)
+                return <p className="text-muted text-xs mt-2">Jio returned a paywall fallback for this channel — your account doesn’t have the pack that includes it. Free/subscribed channels play fine.</p>;
+              if (/unavailable|blocked|not in your|isn’t (in|available)|catch-up|secure connection|https:\/\/|404|plan/i.test(error ?? ""))
+                return null; // message is self-explanatory
+              if (location.protocol !== "https:" && location.hostname !== "localhost")
+                return <p className="text-muted text-xs mt-2">For DRM channels, open the server’s https:// URL (Account → HTTPS).</p>;
+              return <p className="text-muted text-xs mt-2">Couldn’t play this stream. If it’s a DRM channel, open the server’s https:// URL; otherwise the channel may be temporarily down on Jio’s side.</p>;
+            })()}
           </div>
         )}
       </div>
 
       {/* controls (bottom) */}
       <div className={`absolute inset-x-0 bottom-0 flex flex-col gap-1.5 p-3 bg-gradient-to-t from-black/80 to-transparent transition-opacity ${controls ? "opacity-100" : "opacity-0 pointer-events-none"}`}>
-        {/* Seek bar — only for catch-up (VOD has a finite duration; live streams don't). */}
-        {duration > 0 && (
+        {/* Seek bar — catch-up only (live HLS reports a short DVR window we must NOT expose as a scrubber). */}
+        {isCatchup && duration > 0 && (
           <div className="flex items-center gap-2 text-white text-[11px] tabular-nums">
             <span>{fmtDur(position)}</span>
             <input type="range" min={0} max={Math.max(1, duration)} step={1} value={Math.min(position, duration)}
@@ -324,11 +338,11 @@ function PlayerBox({ cid, title }: { cid: string; title: string }) {
           </div>
         )}
         <div className="flex items-center gap-2">
-        <button className="text-white w-8 h-8 grid place-items-center" onClick={togglePlay} title={paused ? "Play" : "Pause"}>
+        <button className="text-white w-10 h-10 md:w-8 md:h-8 grid place-items-center" onClick={togglePlay} title={paused ? "Play" : "Pause"}>
           {paused ? <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
                   : <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z" /></svg>}
         </button>
-        <button className="text-white w-8 h-8 grid place-items-center" onClick={() => { const v = videoRef.current; if (v) v.muted = !v.muted; }} title="Mute">
+        <button className="text-white w-10 h-10 md:w-8 md:h-8 grid place-items-center" onClick={() => { const v = videoRef.current; if (v) v.muted = !v.muted; }} title="Mute">
           {muted || volume === 0 ? <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3L19 9.5 17.5 8 15 10.5 12.5 8 11 9.5 13.5 12 11 14.5 12.5 16 15 13.5 17.5 16 19 14.5z" /></svg>
                                : <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13 3a4 4 0 0 0-2-3.5v7A4 4 0 0 0 16 12z" /></svg>}
         </button>
@@ -336,7 +350,7 @@ function PlayerBox({ cid, title }: { cid: string; title: string }) {
         <div className="ml-auto flex items-center gap-1">
           {(audioLangs.length > 1 || qualities.length > 1) && (
             <div className="relative">
-              <button className="text-white w-8 h-8 grid place-items-center" onClick={() => setMenu((m) => !m)} title="Audio & quality">
+              <button className="text-white w-10 h-10 md:w-8 md:h-8 grid place-items-center" onClick={() => setMenu((m) => !m)} title="Audio & quality">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1A2 2 0 1 1 6.9 4l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 1 1 20.9 6l-.1.1a1.7 1.7 0 0 0-.3 1.9V8a1.7 1.7 0 0 0 1.5 1H22a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" /></svg>
               </button>
               {menu && (
@@ -349,7 +363,7 @@ function PlayerBox({ cid, title }: { cid: string; title: string }) {
               )}
             </div>
           )}
-          <button className="text-white w-8 h-8 grid place-items-center" onClick={toggleFull} title="Fullscreen">
+          <button className="text-white w-10 h-10 md:w-8 md:h-8 grid place-items-center" onClick={toggleFull} title="Fullscreen">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" /></svg>
           </button>
         </div>

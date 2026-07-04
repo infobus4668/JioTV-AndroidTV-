@@ -17,8 +17,23 @@ async function buildApp(extra?: Record<string, unknown>): Promise<FastifyInstanc
   const app = Fastify({ logger: { level: "info" }, bodyLimit: 8_388_608, maxParamLength: 2000, ...(extra as any) }) as unknown as FastifyInstance;
 
   // Widevine license challenges arrive as raw binary — Shaka may send them with an unexpected (or no)
-  // content-type, so parse ANY non-JSON body as a Buffer (JSON keeps Fastify's built-in parser).
+  // content-type, so parse ANY non-JSON body as a Buffer.
   app.addContentTypeParser("*", { parseAs: "buffer" }, (_req, body, done) => done(null, body));
+
+  // Tolerate an EMPTY application/json body. Browsers (fetch) often send DELETE / bodyless POSTs with
+  // `Content-Type: application/json` and no body; Fastify's built-in JSON parser 400s on that, which is
+  // what blocked deleting TV access codes from the dashboard. Empty → {}, otherwise parse normally.
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
+    const s = (body as string).trim();
+    if (!s) return done(null, {});
+    try {
+      done(null, JSON.parse(s));
+    } catch {
+      const err = new Error("Invalid JSON body") as Error & { statusCode?: number };
+      err.statusCode = 400;
+      done(err, undefined);
+    }
+  });
 
   await app.register(cookie);
   await registerRoutes(app);
