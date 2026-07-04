@@ -12,16 +12,19 @@ class JioTvApplication : Application(), ImageLoaderFactory {
         return ImageLoader.Builder(this)
             .memoryCache {
                 MemoryCache.Builder(this)
-                    .maxSizePercent(0.15) // 15% of available RAM (default is 25%)
+                    .maxSizePercent(0.20) // 20% of RAM — a bit more headroom keeps logos hot while scrolling
                     .build()
             }
             .diskCache {
                 DiskCache.Builder()
-                    .maxSizeBytes(50L * 1024 * 1024) // 50 MB disk cache
+                    .maxSizeBytes(64L * 1024 * 1024) // 64 MB disk cache (channel logos rarely change)
                     .directory(cacheDir.resolve("image_cache"))
                     .build()
             }
-            .crossfade(false) // Disable crossfade globally to reduce GPU compositing on weak GPUs
+            .crossfade(false)          // no fade → less GPU compositing on weak TV GPUs
+            .allowRgb565(true)         // 16-bit bitmaps for opaque logos → ~half the memory + faster decode
+            .allowHardware(true)       // GPU-backed bitmaps (skips a CPU copy)
+            .respectCacheHeaders(false) // trust the cache; never re-validate logos over the network
             .build()
     }
 }

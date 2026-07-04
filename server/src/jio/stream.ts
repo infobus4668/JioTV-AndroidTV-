@@ -18,20 +18,36 @@ export class GeturlAuthError extends Error {
   }
 }
 
+/** Catch-up (VOD replay) parameters, taken from the EPG programme. begin/end are epoch MILLISECONDS. */
+export interface CatchupParams {
+  srno: string;
+  programId: string;
+  beginMs: number;
+  endMs: number;
+  showtime: string;
+}
+
 /**
  * Resolves a channel to a playable stream + DRM info (mirrors JioApiClient.getStreamUrl, incl. the
  * exact header set + casing from the Kodi plugin / Android app — casing matters, see http.ts).
- * @param streamType "Live" for live; "Seek" (with beginEpochMs) for catch-up.
+ * @param opts.catchup present → replay a past show (stream_type=Catchup with srno/programId/begin/end/
+ *   showtime, exactly like the Kodi plugin). Returns a CLEAR VOD HLS from Jio's catch-up CDN.
  */
 export async function getStreamData(
   channelId: string,
   auth: AuthData,
-  opts: { streamType?: "Live" | "Seek"; beginEpochMs?: number } = {}
+  opts: { catchup?: CatchupParams } = {}
 ): Promise<StreamData> {
-  const streamType = opts.streamType ?? "Live";
-  let body = `stream_type=${streamType}&channel_id=${encodeURIComponent(channelId)}`;
-  if (streamType === "Seek" && opts.beginEpochMs) {
-    body += `&begin=${Math.floor(opts.beginEpochMs / 1000)}`;
+  const enc = encodeURIComponent;
+  let body: string;
+  if (opts.catchup) {
+    const cu = opts.catchup;
+    // begin/end MUST be in milliseconds (Jio echoes them into the catch-up URL's begin= timestamp).
+    body =
+      `stream_type=Catchup&channel_id=${enc(channelId)}&srno=${enc(cu.srno)}` +
+      `&programId=${enc(cu.programId)}&begin=${cu.beginMs}&end=${cu.endMs}&showtime=${enc(cu.showtime)}`;
+  } else {
+    body = `stream_type=Live&channel_id=${enc(channelId)}`;
   }
 
   const res = await jioRequest({

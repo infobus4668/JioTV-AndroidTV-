@@ -130,25 +130,21 @@ fun MainNavigation() {
                 }
                 entry<Player> { playerArgs ->
                     val groups by mainViewModel.groups.collectAsState()
-
-                    val channels = if (playerArgs.group != null) {
-                        mainViewModel.getChannelsByGroup(playerArgs.group)
-                    } else {
-                        mainViewModel.getAllChannels()
-                    }
-
-                    // Build a map of all channels by group for the category switcher
-                    val allChannelsByGroup = groups.associateWith { group ->
-                        mainViewModel.getChannelsByGroup(group)
-                    }
-
-                    // Map channelIndex from allChannels to filtered list
                     val allChannels = mainViewModel.getAllChannels()
-                    val targetChannel = allChannels.getOrNull(playerArgs.channelIndex)
-                    val filteredIndex = if (targetChannel != null) {
-                        channels.indexOf(targetChannel).coerceAtLeast(0)
-                    } else {
-                        0
+
+                    // Memoize the expensive per-group grouping + index lookups so they run once per
+                    // channel-list change, not on every recomposition (this was a real source of
+                    // player-open / settings-open lag: it re-filtered all ~1300 channels for every group).
+                    val channels = androidx.compose.runtime.remember(playerArgs.group, allChannels) {
+                        if (playerArgs.group != null) mainViewModel.getChannelsByGroup(playerArgs.group)
+                        else allChannels
+                    }
+                    val allChannelsByGroup = androidx.compose.runtime.remember(groups, allChannels) {
+                        groups.associateWith { group -> mainViewModel.getChannelsByGroup(group) }
+                    }
+                    val filteredIndex = androidx.compose.runtime.remember(channels, allChannels, playerArgs.channelIndex) {
+                        val targetChannel = allChannels.getOrNull(playerArgs.channelIndex)
+                        if (targetChannel != null) channels.indexOf(targetChannel).coerceAtLeast(0) else 0
                     }
 
                     TvPlayerScreen(

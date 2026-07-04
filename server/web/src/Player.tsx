@@ -3,6 +3,7 @@ import { useParams, useLocation, useNavigate } from "react-router-dom";
 import shaka from "shaka-player/dist/shaka-player.compiled";
 import Hls from "hls.js";
 import { api, type EpgProgram } from "./api";
+import { DateTabs, dayList, sameDay } from "./dates";
 
 /* ── watch page (player + details + catch-up) ──────────────────────────── */
 export function WatchPage() {
@@ -20,7 +21,12 @@ export function WatchPage() {
   const now = Date.now();
   const current = useMemo(() => programs.find((p) => p.startMs <= now && p.stopMs > now), [programs, now]);
 
-  const playCatchup = (p: EpgProgram) => { setCid(`${id}~${Math.floor(p.startMs / 1000)}`); setCatchTitle(p.title); };
+  const playCatchup = (p: EpgProgram) => {
+    // Encode everything getStreamData needs for a Catchup request into the playback key.
+    const payload = { c: id, s: p.srno ?? "", p: p.showId ?? "", b: p.startMs, e: p.stopMs, t: p.showtime ?? "" };
+    const b64 = btoa(JSON.stringify(payload)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    setCid(`cu.${b64}`); setCatchTitle(p.title);
+  };
   const goLive = () => { setCid(id); setCatchTitle(null); };
 
   return (
@@ -57,26 +63,32 @@ export function WatchPage() {
 
 function fmt(ms: number) { return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
 
-/** A scannable vertical programme guide: time · title · status, with an ON-NOW progress bar. */
+/** A scannable vertical programme guide with a day picker; past shows are catch-up (if available). */
 function ProgrammeGuide({ programs, onCatchup, onLive }: { programs: EpgProgram[]; onCatchup: (p: EpgProgram) => void; onLive: () => void }) {
   const now = Date.now();
+  const [day, setDay] = useState(0);
+  const days = useMemo(dayList, []);
+  const selDate = days.find((d) => d.key === day)?.date ?? new Date();
+  const dayPrograms = useMemo(() => programs.filter((p) => sameDay(p.startMs, selDate)), [programs, day]);
   const nowRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => { nowRef.current?.scrollIntoView({ block: "center" }); }, [programs.length]);
-  if (programs.length === 0)
-    return <div className="card"><h3 className="text-base">Programme guide</h3><p className="text-subtle text-sm mt-1">No guide data for this channel.</p></div>;
+  useEffect(() => { if (day === 0) nowRef.current?.scrollIntoView({ block: "center" }); }, [dayPrograms.length, day]);
+
   return (
     <div className="card !p-0 overflow-hidden">
-      <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-        <h3 className="text-base">Programme guide</h3>
-        <span className="text-subtle text-xs">{new Date(now).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })}</span>
+      <div className="px-4 py-3 border-b border-border">
+        <h3 className="text-base mb-2">Programme guide</h3>
+        <div className="overflow-x-auto no-scrollbar"><DateTabs value={day} onChange={setDay} /></div>
       </div>
-      <div className="max-h-[62vh] overflow-y-auto">
-        {programs.map((p) => {
+      <div className="max-h-[58vh] overflow-y-auto">
+        {dayPrograms.length === 0 ? (
+          <div className="empty-state text-sm">No programme info for this day.</div>
+        ) : dayPrograms.map((p) => {
           const isNow = p.startMs <= now && p.stopMs > now;
           const isPast = p.stopMs <= now;
           const dur = Math.max(1, Math.round((p.stopMs - p.startMs) / 60000));
           const prog = isNow ? Math.min(1, (now - p.startMs) / (p.stopMs - p.startMs)) : 0;
-          const clickable = isPast || isNow;
+          const canCatchup = isPast && !!p.catchup;
+          const clickable = isNow || canCatchup;
           return (
             <button key={p.startMs} ref={isNow ? nowRef : undefined} disabled={!clickable}
               onClick={() => (isNow ? onLive() : onCatchup(p))}
@@ -87,7 +99,7 @@ function ProgrammeGuide({ programs, onCatchup, onLive }: { programs: EpgProgram[
                 <div className="flex items-center gap-2">
                   <span className="text-sm truncate">{p.title}</span>
                   {isNow && <span className="badge badge-accent shrink-0">ON NOW</span>}
-                  {isPast && <span className="badge shrink-0">Catch-up</span>}
+                  {canCatchup && <span className="badge shrink-0">Catch-up</span>}
                 </div>
                 <div className="text-subtle text-xs mt-0.5">{fmt(p.startMs)}–{fmt(p.stopMs)} · {dur}m</div>
                 {isNow && <div className="progress mt-2"><div className="bar" style={{ width: `${prog * 100}%` }} /></div>}
@@ -124,11 +136,15 @@ function PlayerBox({ cid, title }: { cid: string; title: string }) {
   const [curLang, setCurLang] = useState("");
   const [qualities, setQualities] = useState<QualityOpt[]>([]);
   const [curQuality, setCurQuality] = useState<number | "auto">("auto");
+  const [duration, setDuration] = useState(0);   // >0 only for catch-up VOD (seekable)
+  const [position, setPosition] = useState(0);
+  const isCatchup = cid.startsWith("cu.");
 
   useEffect(() => {
     let cancelled = false;
     setError(null); setNotEntitled(false); setLoading(true);
     setAudioLangs([]); setCurLang(""); setQualities([]); setCurQuality("auto");
+    setDuration(0); setPosition(0);
 
     const proxied = (u: string) => `/api/proxy?cid=${encodeURIComponent(cid)}&u=${encodeURIComponent(u)}`;
 
@@ -165,7 +181,14 @@ function PlayerBox({ cid, title }: { cid: string; title: string }) {
             console.error("[hls.js]", data.type, data.details, data.reason ?? "", data.error ?? "", data);
             if (data.fatal && !cancelled) setError(hlsMessage(data));
           });
-          hls.on(Hls.Events.MANIFEST_PARSED, () => { if (!cancelled) { setLoading(false); syncTracks(); } });
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            if (cancelled) return;
+            setLoading(false); syncTracks();
+            // Apply the user's default-quality preference (Channels page dropdown).
+            const heights = Array.from(new Set((hls.levels ?? []).map((l) => l.height).filter(Boolean))) as number[];
+            const target = prefTargetHeight(heights, readPrefQuality());
+            if (target != null) { const i = hls.levels.findIndex((l) => l.height === target); if (i >= 0) { hls.currentLevel = i; setCurQuality(target); } }
+          });
           hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, syncTracks);
           hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, syncTracks);
           hls.loadSource(proxied(info.manifestUrl));
@@ -205,6 +228,9 @@ function PlayerBox({ cid, title }: { cid: string; title: string }) {
           setCurLang(player.getVariantTracks().find((t: any) => t.active)?.language ?? "");
           const heights = Array.from(new Set(player.getVariantTracks().map((t: any) => t.height).filter(Boolean))).sort((a: any, b: any) => b - a) as number[];
           setQualities([{ label: "Auto", height: "auto" }, ...heights.map((h) => ({ label: `${h}p`, height: h }))]);
+          // Apply the user's default-quality preference (Channels page dropdown).
+          const target = prefTargetHeight(heights, readPrefQuality());
+          if (target != null) { player.configure({ abr: { enabled: false } }); const t = player.getVariantTracks().find((v: any) => v.height === target); if (t) { player.selectVariantTrack(t, true); setCurQuality(target); } }
         } catch {}
       } catch (e: any) { if (!cancelled) { setError(drmMessage(e) || e?.message || "Failed to start playback"); setLoading(false); } }
     }
@@ -222,8 +248,15 @@ function PlayerBox({ cid, title }: { cid: string; title: string }) {
     const v = videoRef.current; if (!v) return;
     const onPlay = () => setPaused(false), onPause = () => setPaused(true);
     const onVol = () => { setMuted(v.muted); setVolume(v.volume); };
+    // Only expose a finite duration for VOD (catch-up); live streams report Infinity.
+    const onDur = () => setDuration(Number.isFinite(v.duration) ? v.duration : 0);
+    const onTime = () => setPosition(v.currentTime);
     v.addEventListener("play", onPlay); v.addEventListener("pause", onPause); v.addEventListener("volumechange", onVol);
-    return () => { v.removeEventListener("play", onPlay); v.removeEventListener("pause", onPause); v.removeEventListener("volumechange", onVol); };
+    v.addEventListener("durationchange", onDur); v.addEventListener("timeupdate", onTime);
+    return () => {
+      v.removeEventListener("play", onPlay); v.removeEventListener("pause", onPause); v.removeEventListener("volumechange", onVol);
+      v.removeEventListener("durationchange", onDur); v.removeEventListener("timeupdate", onTime);
+    };
   }, []);
 
   const nudge = useCallback(() => {
@@ -279,7 +312,18 @@ function PlayerBox({ cid, title }: { cid: string; title: string }) {
       </div>
 
       {/* controls (bottom) */}
-      <div className={`absolute inset-x-0 bottom-0 flex items-center gap-2 p-3 bg-gradient-to-t from-black/80 to-transparent transition-opacity ${controls ? "opacity-100" : "opacity-0 pointer-events-none"}`}>
+      <div className={`absolute inset-x-0 bottom-0 flex flex-col gap-1.5 p-3 bg-gradient-to-t from-black/80 to-transparent transition-opacity ${controls ? "opacity-100" : "opacity-0 pointer-events-none"}`}>
+        {/* Seek bar — only for catch-up (VOD has a finite duration; live streams don't). */}
+        {duration > 0 && (
+          <div className="flex items-center gap-2 text-white text-[11px] tabular-nums">
+            <span>{fmtDur(position)}</span>
+            <input type="range" min={0} max={Math.max(1, duration)} step={1} value={Math.min(position, duration)}
+              onChange={(e) => { const v = videoRef.current; const t = Number(e.target.value); if (v) { v.currentTime = t; setPosition(t); } }}
+              className="flex-1 accent-white" title="Seek" />
+            <span>{fmtDur(duration)}</span>
+          </div>
+        )}
+        <div className="flex items-center gap-2">
         <button className="text-white w-8 h-8 grid place-items-center" onClick={togglePlay} title={paused ? "Play" : "Pause"}>
           {paused ? <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
                   : <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z" /></svg>}
@@ -309,9 +353,27 @@ function PlayerBox({ cid, title }: { cid: string; title: string }) {
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" /></svg>
           </button>
         </div>
+        </div>
       </div>
     </div>
   );
+}
+
+function fmtDur(s: number): string {
+  const t = Math.max(0, Math.floor(s));
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), sec = t % 60;
+  const mm = String(m).padStart(2, "0"), ss = String(sec).padStart(2, "0");
+  return h > 0 ? `${h}:${mm}:${ss}` : `${m}:${ss}`;
+}
+
+function readPrefQuality(): string { try { return localStorage.getItem("prefQuality") || "auto"; } catch { return "auto"; } }
+/** Maps a High/Medium/Low preference to a concrete height from the available ladder (null = Auto). */
+function prefTargetHeight(heights: number[], pref: string): number | null {
+  if (pref === "auto" || !heights.length) return null;
+  const asc = [...heights].sort((a, b) => a - b);
+  if (pref === "low") return asc[0];
+  if (pref === "high") return asc[asc.length - 1];
+  return asc[Math.floor((asc.length - 1) / 2)]; // mid
 }
 
 function drmMessage(detail: any): string {

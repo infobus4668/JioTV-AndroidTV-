@@ -80,12 +80,13 @@ object JioExoPlayerFactory {
             .setBufferDurationsMs(
                 minBufferMs,
                 maxBufferMs,
-                3000,   // Buffer required to start/resume playback
-                12000   // Buffer required to resume after a rebuffer (build a cushion first)
+                1200,   // Buffer required to START — low so channels zap in ~1s instead of ~3s
+                5000    // Buffer required to resume after a rebuffer — short so a stall isn't a long freeze
             )
             .setPrioritizeTimeOverSizeThresholds(true)
-            // Keep a back-buffer so brief upstream gaps can be smoothed without a hard rebuffer.
-            .setBackBuffer(20000, true)
+            // Smaller back-buffer: 20s of already-played video is wasted RAM on weak TVs (they only
+            // rewind within the ~1-min live window anyway) and adds GC pressure.
+            .setBackBuffer(8000, true)
             .build()
 
         // Gently nudge playback speed (0.97x–1.03x) to hold a stable distance from the live edge

@@ -7,7 +7,7 @@ import {
   IconTv, IconUser, IconLogOut, IconSun, IconMoon, IconStar, IconSearch,
   IconCopy, IconPlus, IconTrash, IconRefresh, IconCheck, IconGuide, IconDownload, IconList, categoryIcon,
 } from "./Icons";
-import { useLangFilter, LanguageMenu } from "./lang";
+import { useLangFilter, LanguageMenu, usePrefQuality, QualitySelect } from "./lang";
 
 /* ── theme ─────────────────────────────────────────────────────────────── */
 function useTheme() {
@@ -128,6 +128,7 @@ function Channels() {
   const [err, setErr] = useState(""); const [group, setGroup] = useState("All");
   const [q, setQ] = useState(""); const [favs, setFavs] = useState<Set<string>>(new Set());
   const [langs, toggleLang, clearLangs] = useLangFilter();
+  const [prefQ, setPrefQ] = usePrefQuality();
   const FAV = "Favorites";
 
   useEffect(() => {
@@ -170,6 +171,7 @@ function Channels() {
             <IconSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-subtle" size={16} />
             <input className="input pl-9" placeholder="Search channels…" value={q} onChange={(e) => setQ(e.target.value)} />
           </div>
+          <QualitySelect value={prefQ} onChange={setPrefQ} />
           <LanguageMenu available={languages} langs={langs} onToggle={toggleLang} onClear={clearLangs} />
         </div>
         {filtered.length === 0 ? (

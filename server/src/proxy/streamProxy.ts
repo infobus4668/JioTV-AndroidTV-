@@ -1,4 +1,4 @@
-import { getStreamData, GeturlAuthError, type StreamData } from "../jio/stream";
+import { getStreamData, GeturlAuthError, type StreamData, type CatchupParams } from "../jio/stream";
 import { extractHdneaToken, extractTokenExpiryEpochSec } from "../jio/hdnea";
 import { refreshTokens } from "../jio/tokens";
 import { getStoredCredentials, updateTokens } from "../store/db";
@@ -13,26 +13,49 @@ interface CachedStream {
 const HDNEA_MARKER = "__hdnea__=";
 const cache = new Map<string, CachedStream>();
 
-/** A playback key is either "channelId" (live) or "channelId~beginEpochSec" (catch-up). */
-function parseKey(key: string): { channelId: string; beginSec: number } {
-  const i = key.indexOf("~");
-  return i >= 0 ? { channelId: key.slice(0, i), beginSec: Number(key.slice(i + 1)) || 0 } : { channelId: key, beginSec: 0 };
+/**
+ * A playback key is either "channelId" (live) or "cu.<base64url-json>" (catch-up), where the JSON is
+ * `{c:channelId, s:srno, p:programId, b:beginMs, e:endMs, t:showtime}` — everything getStreamData needs
+ * to re-resolve a past show's VOD stream on demand (e.g. after a token refresh).
+ */
+function parseKey(key: string): { channelId: string; catchup?: CatchupParams } {
+  if (key.startsWith("cu.")) {
+    try {
+      const b64 = key.slice(3).replace(/-/g, "+").replace(/_/g, "/");
+      const j = JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
+      return {
+        channelId: String(j.c),
+        catchup: { srno: String(j.s), programId: String(j.p ?? ""), beginMs: Number(j.b), endMs: Number(j.e), showtime: String(j.t ?? "") },
+      };
+    } catch { /* malformed — treat as a live channelId */ }
+  }
+  return { channelId: key };
 }
 
 async function resolve(key: string): Promise<CachedStream> {
-  const { channelId, beginSec } = parseKey(key);
+  const { channelId, catchup } = parseKey(key);
   const creds = getStoredCredentials();
   if (!creds) throw new Error("No active login on the server — sign in on the Account page first.");
-  const opts = beginSec > 0 ? { streamType: "Seek" as const, beginEpochMs: beginSec * 1000 } : {};
+  const opts = catchup ? { catchup } : {};
+  // A 403 from geturl is per-channel: Jio blocks it for this account (delisted / licensing) even though
+  // it's still in the channel list. It's NOT a token or plan issue and no refresh fixes it.
+  const blocked = () =>
+    new Error("Jio blocked this channel (HTTP 403) — it isn't available on your account right now even though it's listed. A few channels are like this regardless of plan; if there's an HD version of the same channel, try that.");
   let data: StreamData;
   try {
     data = await getStreamData(channelId, creds, opts);
   } catch (e) {
-    // A 401/403/419 usually means the SSO token went stale — refresh once and retry (like the app).
     if (e instanceof GeturlAuthError) {
+      if (e.status === 403) throw blocked();
+      // 401/419 usually means the SSO token went stale — refresh once and retry (like the app).
       const refreshed = await refreshTokens(creds);
       updateTokens(refreshed, Date.now());
-      data = await getStreamData(channelId, refreshed, opts);
+      try {
+        data = await getStreamData(channelId, refreshed, opts);
+      } catch (e2) {
+        if (e2 instanceof GeturlAuthError && e2.status === 403) throw blocked();
+        throw e2;
+      }
     } else {
       throw e;
     }

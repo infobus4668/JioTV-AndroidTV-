@@ -10,6 +10,24 @@ export function useLangFilter(): [Set<string>, (l: string) => void, () => void] 
   return [langs, (l) => { const s = new Set(langs); s.has(l) ? s.delete(l) : s.add(l); persist(s); }, () => persist(new Set())];
 }
 
+/** Global, persisted default video quality ("auto" | "high" | "mid" | "low"). Read by the player. */
+export function usePrefQuality(): [string, (q: string) => void] {
+  const [q, setQ] = useState<string>(() => { try { return localStorage.getItem("prefQuality") || "auto"; } catch { return "auto"; } });
+  return [q, (v) => { setQ(v); try { localStorage.setItem("prefQuality", v); } catch {} }];
+}
+
+/** Small dropdown to pick the default quality every channel opens at. */
+export function QualitySelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <select className="input w-auto" value={value} onChange={(e) => onChange(e.target.value)} title="Default video quality for every channel">
+      <option value="auto">Quality · Auto</option>
+      <option value="high">Quality · High</option>
+      <option value="mid">Quality · Medium</option>
+      <option value="low">Quality · Low</option>
+    </select>
+  );
+}
+
 export function LanguageMenu({ available, langs, onToggle, onClear }: {
   available: string[]; langs: Set<string>; onToggle: (l: string) => void; onClear: () => void;
 }) {

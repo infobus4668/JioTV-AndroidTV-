@@ -77,14 +77,14 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
       ? `#EXTM3U url-tvg="${base}/epg.xml${code ? `?code=${encodeURIComponent(code)}` : ""}"`
       : "#EXTM3U";
     lines.push(header);
+    // Note: `catchup` is intentionally not emitted — Jio catch-up needs per-show IDs (srno/programId),
+    // which the M3U `{utc}` catchup template can't supply, so external players get live only.
+    void catchup;
     for (const c of channels) {
       const streamUrl = `${base}/live/${encodeURIComponent(c.id)}.m3u8?ts=1${codeQ}${qualityQ}`;
-      const extras = catchup
-        ? ` catchup="default" catchup-days="7" catchup-source="${base}/live/${encodeURIComponent(c.id)}.m3u8?ts=1${codeQ}${qualityQ}&begin={utc}"`
-        : "";
       lines.push(
         `#EXTINF:-1 tvg-id="${attr(c.id)}" tvg-name="${attr(c.name)}" tvg-logo="${attr(c.logoUrl)}" ` +
-          `group-title="${attr(c.group)}" tvg-language="${attr(c.language)}"${extras},${c.name}`
+          `group-title="${attr(c.group)}" tvg-language="${attr(c.language)}",${c.name}`
       );
       lines.push(streamUrl);
     }
@@ -98,9 +98,8 @@ export async function registerPlaylistRoutes(app: FastifyInstance): Promise<void
   app.get<{ Params: { id: string } }>("/live/:id", { preHandler: requireCode }, async (req, reply) => {
     const rawId = req.params.id.replace(/\.(m3u8|mpd|ts)$/i, "");
     const code = String((req.query as Record<string, unknown>).code ?? "").trim();
-    const begin = Number((req.query as Record<string, unknown>).begin) || 0;
     const maxHeight = qualityToHeight(String((req.query as Record<string, unknown>).q ?? ""));
-    const key = begin > 0 ? `${rawId}~${begin}` : rawId;
+    const key = rawId; // external players get live; catch-up needs per-show IDs (web player only)
 
     try {
       const info = await getPlaybackInfo(key);

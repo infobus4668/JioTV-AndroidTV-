@@ -21,8 +21,8 @@ android {
         applicationId = "com.fenyx.jtv"
         minSdk = 24          // Android 7.0 — comfortably covers the user's Android 10 TV
         targetSdk = 36       // Android 16 (latest)
-        versionCode = 6
-        versionName = "1.4.0"
+        versionCode = 9
+        versionName = "1.4.3"
     }
 
     signingConfigs {

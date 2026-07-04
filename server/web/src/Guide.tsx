@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, type Channel, type EpgProgram } from "./api";
 import { useLangFilter, LanguageMenu } from "./lang";
+import { DateTabs, refTimeFor } from "./dates";
 
 const fmt = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
@@ -13,6 +14,8 @@ export function GuidePage() {
   const [favs, setFavs] = useState<Set<string>>(new Set());
   const [langs, toggleLang, clearLangs] = useLangFilter();
   const [page, setPage] = useState(0);
+  const [day, setDay] = useState(0);
+  const refTime = refTimeFor(day);
   const FAV = "Favorites";
   const PAGE_SIZE = 15;
 
@@ -46,19 +49,20 @@ export function GuidePage() {
         <h2>TV guide {filtered.length > 0 && <span className="text-subtle text-base font-normal">· {filtered.length} channels</span>}</h2>
         <LanguageMenu available={languages} langs={langs} onToggle={toggleLang} onClear={clearLangs} />
       </div>
-      <div className="mb-4 overflow-x-auto no-scrollbar">
+      <div className="mb-3 overflow-x-auto no-scrollbar">
         <div className="tabs w-max">
           {groups.map((g) => (
             <button key={g} className={`tab whitespace-nowrap ${group === g ? "active" : ""}`} onClick={() => setGroup(g)}>{g}</button>
           ))}
         </div>
       </div>
+      <div className="mb-4 overflow-x-auto no-scrollbar"><DateTabs value={day} onChange={setDay} /></div>
       {rows.length === 0 ? (
         <div className="empty-state">{group === FAV ? "No favourites yet." : "No channels here."}</div>
       ) : (
         <>
           <div className="grid gap-2">
-            {rows.map((c) => <GuideRow key={c.id} channel={c} onPlay={() => nav(`/watch/${c.id}`, { state: { name: c.name } })} />)}
+            {rows.map((c) => <GuideRow key={c.id} channel={c} refTime={refTime} onPlay={() => nav(`/watch/${c.id}`, { state: { name: c.name } })} />)}
           </div>
           {pageCount > 1 && (
             <div className="flex items-center justify-center gap-4 mt-5">
@@ -73,20 +77,18 @@ export function GuidePage() {
   );
 }
 
-function GuideRow({ channel, onPlay }: { channel: Channel; onPlay: () => void }) {
-  const [now, setNow] = useState<EpgProgram | null>(null);
-  const [next, setNext] = useState<EpgProgram | null>(null);
+function GuideRow({ channel, refTime, onPlay }: { channel: Channel; refTime: number; onPlay: () => void }) {
+  const [programs, setPrograms] = useState<EpgProgram[]>([]);
   useEffect(() => {
     let live = true;
-    api.epg(channel.id).then((r) => {
-      if (!live) return; const t = Date.now();
-      setNow(r.programs.find((p) => p.startMs <= t && p.stopMs > t) ?? null);
-      setNext(r.programs.find((p) => p.startMs > t) ?? null);
-    }).catch(() => {});
+    api.epg(channel.id).then((r) => { if (live) setPrograms(r.programs); }).catch(() => {});
     return () => { live = false; };
   }, [channel.id]);
 
-  const t = Date.now();
+  // Now/Next relative to the selected day's reference time (today = the real now).
+  const t = refTime;
+  const now = programs.find((p) => p.startMs <= t && p.stopMs > t) ?? null;
+  const next = programs.find((p) => p.startMs > t) ?? null;
   const prog = now ? Math.min(1, (t - now.startMs) / (now.stopMs - now.startMs)) : 0;
 
   return (

@@ -65,7 +65,7 @@ fun SetupScreen(
                 onClick = onChoosePhone
             )
             SetupCard(
-                emoji = "🖧",
+                emoji = "🖥️",
                 title = "Connect to JTV Proxy Server",
                 subtitle = "Pull shared credentials from your server — log in once, use every TV.",
                 onClick = onChooseServer

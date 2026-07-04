@@ -23,6 +23,10 @@ export interface EpgProgram {
   description: string;
   startMs: number;
   stopMs: number;
+  srno?: string;
+  showId?: string;
+  showtime?: string;
+  catchup?: boolean;
 }
 
 export interface AccessCode {

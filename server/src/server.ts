@@ -13,7 +13,8 @@ import { ensureCert } from "./https";
 /** Builds a fully-wired Fastify instance (used for both the HTTP and HTTPS listeners). */
 async function buildApp(extra?: Record<string, unknown>): Promise<FastifyInstance> {
   // `extra` may carry an `https` option; cast because that changes Fastify's inferred server type.
-  const app = Fastify({ logger: { level: "info" }, bodyLimit: 8_388_608, ...(extra as any) }) as unknown as FastifyInstance;
+  // maxParamLength default is 100 — too short for the base64 catch-up key in `/api/play/:id`.
+  const app = Fastify({ logger: { level: "info" }, bodyLimit: 8_388_608, maxParamLength: 2000, ...(extra as any) }) as unknown as FastifyInstance;
 
   // Widevine license challenges arrive as raw binary — Shaka may send them with an unexpected (or no)
   // content-type, so parse ANY non-JSON body as a Buffer (JSON keeps Fastify's built-in parser).

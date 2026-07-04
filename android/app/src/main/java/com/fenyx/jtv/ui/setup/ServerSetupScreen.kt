@@ -6,13 +6,16 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -57,6 +60,8 @@ fun ServerSetupScreen(
     }
 
     val urlFocus = remember { FocusRequester() }
+    val tokenFocus = remember { FocusRequester() }
+    val connectFocus = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { urlFocus.requestFocus() } }
 
     fun connect() {
@@ -107,15 +112,20 @@ fun ServerSetupScreen(
             onValueChange = { serverUrl = it },
             placeholder = "http://192.168.1.10:8080",
             keyboardType = KeyboardType.Uri,
+            imeAction = ImeAction.Next,
+            keyboardActions = KeyboardActions(onNext = { runCatching { tokenFocus.requestFocus() } }),
             modifier = Modifier.focusRequester(urlFocus)
         )
         Spacer(Modifier.height(TvDimens.SpaceMd))
         TvField(
-            label = "Access Token",
+            label = "Access Token / Code",
             value = token,
             onValueChange = { token = it },
-            placeholder = "server access token",
-            keyboardType = KeyboardType.Password
+            placeholder = "server access code",
+            keyboardType = KeyboardType.Text,
+            imeAction = ImeAction.Done,
+            keyboardActions = KeyboardActions(onDone = { runCatching { connectFocus.requestFocus() } }),
+            modifier = Modifier.focusRequester(tokenFocus)
         )
         Spacer(Modifier.height(TvDimens.SpaceXl))
 
@@ -132,6 +142,7 @@ fun ServerSetupScreen(
             }
             Surface(
                 onClick = { if (!isConnecting) connect() },
+                modifier = Modifier.focusRequester(connectFocus),
                 shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
                 scale = ClickableSurfaceDefaults.scale(focusedScale = TvDimens.FocusedScale),
                 colors = ClickableSurfaceDefaults.colors(
@@ -157,33 +168,59 @@ private fun TvField(
     onValueChange: (String) -> Unit,
     placeholder: String,
     keyboardType: KeyboardType,
+    imeAction: ImeAction = ImeAction.Default,
+    keyboardActions: KeyboardActions = KeyboardActions.Default,
     modifier: Modifier = Modifier
 ) {
+    // Click-to-edit: the field is a normal focusable Surface you can D-pad past freely. Pressing OK
+    // enters edit mode (shows the keyboard); finishing (Done/Next) or moving focus away exits it — so
+    // the remote is never trapped inside the keyboard.
+    var editing by remember { mutableStateOf(false) }
+    val editFocus = remember { FocusRequester() }
+    LaunchedEffect(editing) { if (editing) runCatching { editFocus.requestFocus() } }
+
     Column(modifier = Modifier.width(520.dp)) {
         Text(label, style = MaterialTheme.typography.labelMedium, color = TvOnSurfaceVariant)
         Spacer(Modifier.height(6.dp))
-        Box(
-            modifier = modifier
-                .fillMaxWidth()
-                .height(54.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(TvDarkSurfaceVariant)
-                .border(1.dp, TvPrimary.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
-                .padding(horizontal = 16.dp),
-            contentAlignment = Alignment.CenterStart
-        ) {
-            if (value.isEmpty()) {
-                Text(placeholder, color = TvOnSurfaceVariant, fontSize = 16.sp)
-            }
-            BasicTextField(
-                value = value,
-                onValueChange = onValueChange,
-                singleLine = true,
-                textStyle = TextStyle(color = TvOnSurface, fontSize = 16.sp),
-                cursorBrush = SolidColor(TvPrimary),
-                keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
-                modifier = Modifier.fillMaxWidth()
+        Surface(
+            onClick = { editing = true },
+            modifier = modifier.fillMaxWidth(),
+            shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
+            colors = ClickableSurfaceDefaults.colors(
+                containerColor = TvDarkSurfaceVariant,
+                focusedContainerColor = TvDarkSurfaceVariant
+            ),
+            border = ClickableSurfaceDefaults.border(
+                border = Border(BorderStroke(1.dp, TvPrimary.copy(alpha = 0.4f)), shape = RoundedCornerShape(10.dp)),
+                focusedBorder = Border(BorderStroke(2.dp, TvPrimary), shape = RoundedCornerShape(10.dp))
             )
+        ) {
+            Box(
+                modifier = Modifier.fillMaxWidth().height(54.dp).padding(horizontal = 16.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                if (editing) {
+                    BasicTextField(
+                        value = value,
+                        onValueChange = onValueChange,
+                        singleLine = true,
+                        textStyle = TextStyle(color = TvOnSurface, fontSize = 16.sp),
+                        cursorBrush = SolidColor(TvPrimary),
+                        keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = imeAction),
+                        keyboardActions = keyboardActions,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(editFocus)
+                            .onFocusChanged { if (!it.isFocused) editing = false } // keyboard closed → back to nav
+                    )
+                } else {
+                    Text(
+                        value.ifEmpty { placeholder },
+                        color = if (value.isEmpty()) TvOnSurfaceVariant else TvOnSurface,
+                        fontSize = 16.sp
+                    )
+                }
+            }
         }
     }
 }
