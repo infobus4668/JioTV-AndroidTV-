@@ -32,6 +32,20 @@ enum class EpgSyncStatus {
 }
 
 class EpgRepository(private val context: Context) {
+
+    companion object {
+        /**
+         * Parses an XMLTV `start`/`stop` timestamp ("yyyyMMddHHmmss Z", e.g. "20260711183000 +0530")
+         * to epoch millis, returning 0 for a null/blank/malformed value. The [SimpleDateFormat] is
+         * passed in (not created here) because it is not thread-safe and the parse loop reuses a single
+         * instance — so this stays allocation-free on the hot path while remaining unit-testable.
+         */
+        internal fun parseXmltvMillis(value: String?, fmt: SimpleDateFormat): Long {
+            if (value.isNullOrBlank()) return 0
+            return try { fmt.parse(value)?.time ?: 0 } catch (e: Exception) { 0 }
+        }
+    }
+
     private val TAG = "EpgRepository"
     private val cacheFileName = "epg_cache.xml"
     // NOTE: SimpleDateFormat is NOT thread-safe. getEpgData can run concurrently (auto-fetch when EPG
@@ -153,13 +167,8 @@ class EpgRepository(private val context: Context) {
                             val startStr = xpp.getAttributeValue(null, "start")
                             val stopStr = xpp.getAttributeValue(null, "stop")
                             
-                            try {
-                                currentStartMs = dateFormat.parse(startStr)?.time ?: 0
-                                currentStopMs = dateFormat.parse(stopStr)?.time ?: 0
-                            } catch (e: Exception) {
-                                currentStartMs = 0
-                                currentStopMs = 0
-                            }
+                            currentStartMs = parseXmltvMillis(startStr, dateFormat)
+                            currentStopMs = parseXmltvMillis(stopStr, dateFormat)
                             currentTitle = ""
                             currentDesc = ""
                         }

@@ -31,3 +31,4 @@ plugins {
 
 rootProject.name = "JioTV Go TV"
 include(":app")
+include(":baselineprofile")

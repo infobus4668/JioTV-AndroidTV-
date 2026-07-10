@@ -11,6 +11,15 @@ The project is structured around the modern Android recommended architecture usi
 - `com.fenyx.jtv.ui`: Contains all Compose UI screens.
 - `com.fenyx.jtv.data`: Contains data classes, API clients, Settings manager, and Plugin logic.
 
+**Modules:** `:app` (the TV app) and `:baselineprofile` (a `com.android.test` Macrobenchmark module
+that generates a Baseline Profile for the launch → browse → play journey). Generate the profile on an
+API 33+ device/emulator with `./gradlew :app:generateReleaseBaselineProfile`; the result is embedded in
+release builds via ProfileInstaller and benefits API 24+ devices at runtime.
+
+**Tests:** pure helpers are unit-tested under `app/src/test` — `JioApiClientTokenTest`
+(`extractHdneaToken` / `extractTokenExpiryEpochSec`), `EpgRepositoryTest` (`parseXmltvMillis`), and
+`ChannelLanguageTest` (language-variant collapsing). Run with `./gradlew testDebugUnitTest`.
+
 ## 2. Authentication & Login Flow
 
 The app authenticates against the Jio API via SMS/OTP login.

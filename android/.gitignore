@@ -15,6 +15,9 @@
 local.properties
 *.apk
 
+# Internal audit output — not for publishing
+MODERNIZATION_REPORT.md
+
 # Release signing — keep secrets out of version control
 keystore.properties
 *.keystore

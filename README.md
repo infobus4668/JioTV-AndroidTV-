@@ -173,6 +173,15 @@ Then build the signed, minified release (~3–4 MB):
 
 ## 📝 Changelog
 
+### v1.5.0
+- **Platform modernization** — updated the build toolchain and core libraries: AGP 9.2 · Gradle 9.4.1 ·
+  Kotlin 2.3.21 · Jetpack Compose 2026.06 · **AndroidX Media3 1.11** · Lifecycle 2.11 · Coil 2.7
+  (`compileSdk 37`; `minSdk`/`targetSdk` unchanged).
+- **Baseline Profile groundwork** — added a `:baselineprofile` module + ProfileInstaller so a
+  generated launch→browse→play profile can be embedded for faster cold start on low-end TV boxes.
+- **Tests** — added unit tests for stream-token extraction/expiry and EPG timestamp parsing.
+- **Cleanup** — removed unused settings keys and a stale dependency entry.
+
 ### v1.4.0
 - **Companion server** (self-hostable, Docker): log in once and share it across every TV, a full
   **browser web player** (channel grid, TV guide, catch-up, favourites, language filter), and an

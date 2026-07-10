@@ -22,10 +22,7 @@ class SettingsManager(private val context: Context) {
         private val PLAYBACK_BUFFER_SEC = intPreferencesKey("playback_buffer_sec")
         private val VOICE_BOOST = intPreferencesKey("voice_boost")          // 0=off,1=low,2=medium,3=high,4=max
         private val AUDIO_NORMALIZE = booleanPreferencesKey("audio_normalize")
-        private val REDUCE_BACKGROUND = booleanPreferencesKey("reduce_background")
-        private val BUFFER_SIZE = intPreferencesKey("buffer_size")
         private val LAST_SELECTED_CATEGORY = stringPreferencesKey("last_selected_category")
-        private val LAST_SELECTED_CHANNEL_INDEX = intPreferencesKey("last_selected_channel_index")
         private val LAST_UPDATE_CHECK = stringPreferencesKey("last_update_check_timestamp")
         private val PLAYER_RESIZE_MODE = intPreferencesKey("player_resize_mode")
         
@@ -103,20 +100,9 @@ class SettingsManager(private val context: Context) {
     val audioNormalizeFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
         preferences[AUDIO_NORMALIZE] ?: false
     }
-    val reduceBackgroundFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
-        preferences[REDUCE_BACKGROUND] ?: false
-    }
-
-    val bufferSizeFlow: Flow<Int> = context.dataStore.data.map { preferences ->
-        preferences[BUFFER_SIZE] ?: 5000
-    }
 
     val lastSelectedCategoryFlow: Flow<String?> = context.dataStore.data.map { preferences ->
         preferences[LAST_SELECTED_CATEGORY]
-    }
-
-    val lastSelectedChannelIndexFlow: Flow<Int> = context.dataStore.data.map { preferences ->
-        preferences[LAST_SELECTED_CHANNEL_INDEX] ?: 0
     }
 
     val lastUpdateCheckFlow: Flow<Long> = context.dataStore.data.map { preferences ->
@@ -212,25 +198,9 @@ class SettingsManager(private val context: Context) {
         context.dataStore.edit { preferences -> preferences[AUDIO_NORMALIZE] = enabled }
     }
 
-    suspend fun setReduceBackground(enabled: Boolean) {
-        context.dataStore.edit { preferences -> preferences[REDUCE_BACKGROUND] = enabled }
-    }
-
-    suspend fun setBufferSize(size: Int) {
-        context.dataStore.edit { preferences ->
-            preferences[BUFFER_SIZE] = size
-        }
-    }
-
     suspend fun setLastSelectedCategory(category: String) {
         context.dataStore.edit { preferences ->
             preferences[LAST_SELECTED_CATEGORY] = category
-        }
-    }
-
-    suspend fun setLastSelectedChannelIndex(index: Int) {
-        context.dataStore.edit { preferences ->
-            preferences[LAST_SELECTED_CHANNEL_INDEX] = index
         }
     }
 
