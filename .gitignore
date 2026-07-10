@@ -31,5 +31,9 @@ npm-debug.log*
 gh.zip
 gh_cli/
 
+# Local tooling / working notes — not part of the shipped project
+docs/
+.claude/
+
 # local run logs
 server/local-run.log
