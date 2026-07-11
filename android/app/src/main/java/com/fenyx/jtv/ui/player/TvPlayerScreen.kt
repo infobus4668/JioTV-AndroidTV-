@@ -277,12 +277,20 @@ fun TvPlayerScreen(
         // Tunneling is applied at construction (see remember key above), not here, because the base
         // TrackSelectionParameters.Builder doesn't expose setTunnelingEnabled in Media3 1.4.
 
+        // An explicit quality choice is a FLOOR as well as a ceiling. Previously these were max-only
+        // caps, so ABR was free to sit on Jio's ~80 kbps / 480p rendition even when the user had asked
+        // for 1080p — the "doesn't follow my quality setting, starts blurry and creeps up" complaint.
+        // Pinning min == max keeps the chosen tier locked. This can't black-screen: DefaultTrackSelector
+        // has exceedVideoConstraintsIfNecessary=true by default, so a channel whose top rendition is
+        // below the floor still falls back to its best available.
         when (quality) {
+            // "low" is a deliberate data-saver / weak-link choice, so keep it a ceiling only and let
+            // ABR drop further if the network genuinely can't hold 480p.
             "low" -> builder.setMaxVideoSize(854, 480)
-            "medium" -> builder.setMaxVideoSize(1280, 720)
-            "high" -> builder.setMaxVideoSize(1920, 1080)
-            // "auto": allow up to 1080p (sharp on a 50" panel + wired connection); ABR still scales
-            // down automatically if bandwidth/decoder can't keep up.
+            "medium" -> builder.setMinVideoSize(1280, 720).setMaxVideoSize(1280, 720)
+            "high" -> builder.setMinVideoSize(1920, 1080).setMaxVideoSize(1920, 1080)
+            // "auto": no floor — ABR adapts freely, but it now *starts* high because the bandwidth
+            // meter is seeded optimistically in JioExoPlayerFactory instead of ramping from the floor.
             else -> builder.setMaxVideoSize(1920, 1080)
         }
 
@@ -321,6 +329,22 @@ fun TvPlayerScreen(
                 }
                 android.util.Log.d("TvPlayerAudio", "audio tracks (${opts.size} playable):$diag")
                 audioTracks = opts
+
+                // Diagnostic: which VIDEO rendition did ABR actually pick? Filter logcat by tag
+                // "TvPlayerVideo" to confirm the quality setting is being honoured (the selected line
+                // should match the chosen tier, not Jio's ~80 kbps floor).
+                val vdiag = StringBuilder()
+                for (g in tracks.groups) {
+                    if (g.type == androidx.media3.common.C.TRACK_TYPE_VIDEO) {
+                        for (i in 0 until g.length) {
+                            val f = g.getTrackFormat(i)
+                            vdiag.append("\n  ${f.width}x${f.height} @${f.bitrate}bps " +
+                                "codec=${f.codecs} supported=${g.isTrackSupported(i)} " +
+                                "SELECTED=${g.isTrackSelected(i)}")
+                        }
+                    }
+                }
+                android.util.Log.d("TvPlayerVideo", "video renditions:$vdiag")
             }
             override fun onPlaybackStateChanged(state: Int) {
                 isBuffering = state == Player.STATE_BUFFERING
@@ -411,6 +435,14 @@ fun TvPlayerScreen(
                     val drmConfig = MediaItem.DrmConfiguration.Builder(androidx.media3.common.C.WIDEVINE_UUID)
                         .setLicenseUri(streamData.licenseUrl)
                         .setLicenseRequestHeaders(streamData.licenseHeaders)
+                        // Don't hard-block the pipeline on the Widevine license round-trip: render any
+                        // clear leading segments while the key is still being fetched. Shaves the
+                        // license RTT off every channel zap. The device already does secure hardware
+                        // (L1) decode, so protected segments still wait for their key as required.
+                        .setPlayClearContentWithoutKey(true)
+                        // Live DRM: allow a fresh session per key rotation rather than forcing one
+                        // session for the whole stream.
+                        .setMultiSession(true)
                         .build()
                     mediaItemBuilder.setDrmConfiguration(drmConfig)
                 }

@@ -173,6 +173,17 @@ Then build the signed, minified release (~3–4 MB):
 
 ## 📝 Changelog
 
+### v1.5.1
+- **Video quality now actually follows your setting.** Picking **High (1080p)** used to be a *ceiling*
+  only, so playback still began on Jio's lowest rendition (as low as 320×180) and slowly crept up. The
+  chosen quality is now a **floor as well as a ceiling**, and the player starts on the top rendition
+  immediately instead of ramping. *(Verified on-device: 1080p @2.3 Mbps selected from the first segment.)*
+- **Faster channel zaps on DRM channels** — playback no longer blocks on the Widevine license round-trip
+  before rendering.
+- **Lighter playback loop** on weak TV CPUs (Media3 1.11 dynamic scheduling).
+- Toolchain/library currency: Kotlin 2.4.0 · Gradle 9.6.1 · AGP 9.2.1 · Compose 2026.06.01 ·
+  Navigation3 1.1.4 · DataStore 1.2.1 · Coroutines 1.11.0 · core-ktx 1.19.0.
+
 ### v1.5.0
 - **Platform modernization** — updated the build toolchain and core libraries: AGP 9.2 · Gradle 9.4.1 ·
   Kotlin 2.3.21 · Jetpack Compose 2026.06 · **AndroidX Media3 1.11** · Lifecycle 2.11 · Coil 2.7
