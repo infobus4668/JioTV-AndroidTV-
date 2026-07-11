@@ -96,6 +96,17 @@ object JioExoPlayerFactory {
         trackSelector.parameters = trackSelector.buildUponParameters()
             .setPreferredAudioLanguage(preferredAudioLang)
             .setTunnelingEnabled(tunneling)
+            // ─── The "picture glitches for a second mid-programme" fix ───
+            // On these boxes every ABR resolution change tears down and re-initialises the SECURE AVC
+            // decoder and renegotiates the Widevine session. Logcat during a 720p->1080p switch showed
+            // repeated CryptoHal re-init, "WIDEVINE_FLOW_CONTROL Command 16505: 43993 us" (a 44ms
+            // block), OMX "MS.AVC.Decoder.secure ... ParamPortDefinition ERROR", and the AudioTrack
+            // being recreated. That is the visible hitch.
+            //
+            // Secure decoders on MediaTek/Amlogic TV SoCs don't support seamless adaptation, so we
+            // refuse switches that would not be seamless: ABR holds its rendition instead of glitching.
+            // For a LIVE TV app a rock-steady picture beats chasing the last rung of bitrate.
+            .setAllowVideoNonSeamlessAdaptiveness(false)
             // Quality bounds (min AND max) are applied per-selection in TvPlayerScreen so an explicit
             // user choice is a FLOOR as well as a ceiling.
             .build()
@@ -119,11 +130,25 @@ object JioExoPlayerFactory {
             .setBackBuffer(8000, true)
             .build()
 
-        // Gently nudge playback speed (0.97x–1.03x) to hold a stable distance from the live edge
-        // instead of repeatedly draining the buffer and rebuffering.
+        // ─── The "picture blinks/judders every few seconds" fix ───
+        // Hold a stable distance from the live edge — but do it RARELY and GENTLY.
+        //
+        // The defaults are far too twitchy for a TV: DefaultLivePlaybackSpeedControl re-evaluates every
+        // 1s and corrects as soon as the live offset drifts by just 20ms, over a wide 0.97x–1.03x range.
+        // On 25fps broadcast content that meant playback speed was being modulated continuously — the
+        // MediaTek decoder log showed the decode rate oscillating 25 -> 24 -> 25 fps forever, with
+        // E:0,D:0,S:0 (no dropped or skipped frames, so the decoder was fine). A constantly shifting
+        // frame cadence against a fixed-Hz panel is seen as a periodic judder/blink.
+        //
+        // So: tolerate a full second of drift before touching speed, re-evaluate at most every 5s, keep
+        // the correction sub-perceptual (±0.5%), and apply it gently. Live-edge tracking still works
+        // (over minutes, which is all it needs to do) without ever visibly changing cadence.
         val liveSpeedControl = DefaultLivePlaybackSpeedControl.Builder()
-            .setFallbackMinPlaybackSpeed(0.97f)
-            .setFallbackMaxPlaybackSpeed(1.03f)
+            .setFallbackMinPlaybackSpeed(0.995f)
+            .setFallbackMaxPlaybackSpeed(1.005f)
+            .setMaxLiveOffsetErrorMsForUnitSpeed(1_000)
+            .setMinUpdateIntervalMs(5_000)
+            .setProportionalControlFactor(0.1f)
             .build()
 
         return ExoPlayer.Builder(context, renderersFactory)
@@ -131,10 +156,10 @@ object JioExoPlayerFactory {
             .setLoadControl(loadControl)
             .setBandwidthMeter(bandwidthMeter)
             .setLivePlaybackSpeedControl(liveSpeedControl)
-            // Media3 1.11: schedule the core playback loop only when there is work to do, instead of
-            // waking on a fixed 10ms cadence. Less CPU burn per frame — the point of this is weak
-            // Amlogic/MediaTek TV cores, where the playback loop competes with the decoder.
-            .experimentalSetDynamicSchedulingEnabled(true)
+            // NOTE: experimentalSetDynamicSchedulingEnabled is deliberately NOT enabled. It is an
+            // *experimental* API in a *beta* Media3, it alters playback-loop timing, and it was live on
+            // the build where mid-playback stutter was reported. The theoretical CPU saving isn't worth
+            // risking a steady picture on a live TV app; revisit once it's stable.
             .build()
     }
 }

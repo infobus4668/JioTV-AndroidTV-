@@ -173,6 +173,18 @@ Then build the signed, minified release (~3–4 MB):
 
 ## 📝 Changelog
 
+### v1.5.2
+- **No more reload a second into every channel.** The saved quality preference loaded *after* playback
+  had already started and (needlessly) re-fetched the stream and re-prepared the player. Quality never
+  affected the stream URL in the first place — it now applies to track selection only, so each channel
+  loads exactly once.
+- **Smoother picture on TV boxes.** Resolution switches are no longer allowed when they'd force the
+  secure hardware decoder to tear down and re-initialise (which these MediaTek/Amlogic chips can't do
+  seamlessly), and live-edge speed correction is now gentle and infrequent instead of nudging playback
+  speed every second.
+- Reverted two experimental playback options from v1.5.1 (Media3 dynamic scheduling, Widevine
+  multi-session) — unproven, and not worth the risk to a steady picture.
+
 ### v1.5.1
 - **Video quality now actually follows your setting.** Picking **High (1080p)** used to be a *ceiling*
   only, so playback still began on Jio's lowest rendition (as low as 320×180) and slowly crept up. The

@@ -165,10 +165,17 @@ fun TvPlayerScreen(
         }
     }
 
+    // Gate the first prepare() on the saved prefs being loaded. `quality` starts at "auto" and the real
+    // value arrives from DataStore a beat later; because the media-source effect used to key on
+    // `quality`, that late arrival re-fetched the stream and re-prepared the player *while it was
+    // already playing* — a visible hitch a second into every channel. Quality doesn't affect the stream
+    // URL at all (Jio serves one MPD containing every rendition), so it must not drive a reload.
+    var prefsLoaded by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         quality = settingsManager.defaultQualityFlow.first()
         language = settingsManager.defaultLanguageFlow.first()
         resizeMode = settingsManager.playerResizeModeFlow.first()
+        prefsLoaded = true
     }
 
     // Player state
@@ -272,6 +279,10 @@ fun TvPlayerScreen(
     }
 
     LaunchedEffect(exoPlayer, language, quality) {
+        // NOTE: the anti-glitch setAllowVideoNonSeamlessAdaptiveness(false) is applied in
+        // JioExoPlayerFactory — it lives on DefaultTrackSelector.Parameters.Builder, not on the base
+        // TrackSelectionParameters.Builder that buildUpon() returns here. It persists across these
+        // updates because buildUpon() carries the existing parameters forward.
         val builder = exoPlayer.trackSelectionParameters.buildUpon()
             .setPreferredAudioLanguage(language)
         // Tunneling is applied at construction (see remember key above), not here, because the base
@@ -388,9 +399,13 @@ fun TvPlayerScreen(
     // a moment after open, or the hardware-decoder toggle changes), the NEW instance must be given the
     // media source — otherwise it buffers forever until some other change re-triggers this. That was the
     // "loads until I change a setting" bug.
-    LaunchedEffect(exoPlayer, playingChannel, quality, streamRefreshTrigger) {
+    LaunchedEffect(exoPlayer, playingChannel, prefsLoaded, streamRefreshTrigger) {
         val ch = playingChannel
-        if (ch != null) {
+        // Wait for the saved prefs before the first prepare(), so the correct quality constraints are
+        // already in place and playback never has to switch rendition (and re-init the secure decoder)
+        // right after it starts. NOTE: `quality` is deliberately NOT a key here — it does not change
+        // the stream URL, only track selection, which the separate effect below applies live.
+        if (ch != null && prefsLoaded) {
             // Persist the representative (logical) channel for autoplay, not the language sibling.
             currentChannel?.let { settingsManager.setLastChannelId(it.id) }
             settingsManager.setLastChannelGroup(currentGroup)
@@ -440,9 +455,9 @@ fun TvPlayerScreen(
                         // license RTT off every channel zap. The device already does secure hardware
                         // (L1) decode, so protected segments still wait for their key as required.
                         .setPlayClearContentWithoutKey(true)
-                        // Live DRM: allow a fresh session per key rotation rather than forcing one
-                        // session for the whole stream.
-                        .setMultiSession(true)
+                        // NOTE: multiSession is deliberately left at the default (false). Enabling it
+                        // spun up a fresh Widevine session on every key rotation, and logcat showed the
+                        // resulting CryptoHal/CDM churn contributing to the mid-playback hitch.
                         .build()
                     mediaItemBuilder.setDrmConfiguration(drmConfig)
                 }
