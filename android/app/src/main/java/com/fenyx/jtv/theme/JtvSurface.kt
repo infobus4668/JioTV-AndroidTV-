@@ -10,7 +10,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.PressInteraction
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.input.pointer.pointerInput
+import kotlinx.coroutines.launch
 import androidx.tv.material3.ClickableSurfaceBorder
 import androidx.tv.material3.ClickableSurfaceColors
 import androidx.tv.material3.ClickableSurfaceDefaults
@@ -47,10 +51,31 @@ fun Surface(
     content: @Composable BoxScope.() -> Unit
 ) {
     val focusRequester = remember { FocusRequester() }
+    val coroutineScope = rememberCoroutineScope()
     androidx.tv.material3.Surface(
         onClick = onClick,
         modifier = modifier
             .mouseHoverToFocus(focusRequester)
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onPress = { offset ->
+                        val press = PressInteraction.Press(offset)
+                        coroutineScope.launch {
+                            interactionSource.emit(press)
+                        }
+                        val success = tryAwaitRelease()
+                        coroutineScope.launch {
+                            if (success) {
+                                interactionSource.emit(PressInteraction.Release(press))
+                            } else {
+                                interactionSource.emit(PressInteraction.Cancel(press))
+                            }
+                        }
+                    },
+                    onTap = { onClick() },
+                    onLongPress = { onLongClick?.invoke() }
+                )
+            }
             .indication(interactionSource, LocalIndication.current),
         onLongClick = onLongClick,
         shape = shape,
