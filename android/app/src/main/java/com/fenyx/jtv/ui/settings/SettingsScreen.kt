@@ -36,7 +36,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.tv.material3.Text
 import androidx.tv.material3.MaterialTheme
-import androidx.tv.material3.Surface
+import com.fenyx.jtv.theme.Surface
 import androidx.tv.material3.ClickableSurfaceDefaults
 import com.fenyx.jtv.data.SettingsManager
 import com.fenyx.jtv.theme.*

@@ -39,7 +39,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
-import androidx.tv.material3.Surface
+import com.fenyx.jtv.theme.Surface
 import androidx.tv.material3.MaterialTheme
 import coil.compose.AsyncImage
 import coil.request.ImageRequest

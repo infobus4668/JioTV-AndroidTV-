@@ -27,7 +27,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.MaterialTheme
-import androidx.tv.material3.Surface
+import com.fenyx.jtv.theme.Surface
 import androidx.tv.material3.Text
 import com.fenyx.jtv.data.ServerClient
 import com.fenyx.jtv.data.SettingsManager

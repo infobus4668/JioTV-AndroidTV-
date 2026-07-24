@@ -29,7 +29,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.tv.material3.Text
 import androidx.tv.material3.MaterialTheme
-import androidx.tv.material3.Surface
+import com.fenyx.jtv.theme.Surface
 import androidx.tv.material3.ClickableSurfaceDefaults
 import com.fenyx.jtv.data.SettingsManager
 import com.fenyx.jtv.data.JioApiClient
