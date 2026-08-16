@@ -32,6 +32,12 @@ class SettingsManager(private val context: Context) {
         private val EPG_MODE = booleanPreferencesKey("epg_mode")
         private val EPG_URL = stringPreferencesKey("epg_url")
         private val FAVORITE_CHANNELS = stringPreferencesKey("favorite_channels")
+
+        // Language filter for the channel list (multi-select, empty = show all), stored like favorites.
+        private val LANGUAGE_FILTER = stringPreferencesKey("language_filter")
+
+        // Sort channel lists A–Z by name instead of by channel number.
+        private val CHANNEL_SORT_ALPHABETICAL = booleanPreferencesKey("channel_sort_alphabetical")
         
         private val AUTH_SSO_TOKEN = stringPreferencesKey("auth_sso_token")
         private val AUTH_AUTH_TOKEN = stringPreferencesKey("auth_auth_token")
@@ -141,6 +147,15 @@ class SettingsManager(private val context: Context) {
     val favoriteChannelsFlow: Flow<Set<String>> = context.dataStore.data.map { preferences ->
         val serialized = preferences[FAVORITE_CHANNELS] ?: ""
         if (serialized.isEmpty()) emptySet() else serialized.split(",").toSet()
+    }
+
+    val languageFilterFlow: Flow<Set<String>> = context.dataStore.data.map { preferences ->
+        val serialized = preferences[LANGUAGE_FILTER] ?: ""
+        if (serialized.isEmpty()) emptySet() else serialized.split(",").filter { it.isNotBlank() }.toSet()
+    }
+
+    val channelSortAlphabeticalFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[CHANNEL_SORT_ALPHABETICAL] ?: false
     }
 
     val authDataFlow: Flow<JioApiClient.AuthData?> = context.dataStore.data.map { preferences ->
@@ -264,6 +279,18 @@ class SettingsManager(private val context: Context) {
                 set.add(channelId)
             }
             preferences[FAVORITE_CHANNELS] = set.joinToString(",")
+        }
+    }
+
+    suspend fun setLanguageFilter(languages: Set<String>) {
+        context.dataStore.edit { preferences ->
+            preferences[LANGUAGE_FILTER] = languages.filter { it.isNotBlank() }.joinToString(",")
+        }
+    }
+
+    suspend fun setChannelSortAlphabetical(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[CHANNEL_SORT_ALPHABETICAL] = enabled
         }
     }
 

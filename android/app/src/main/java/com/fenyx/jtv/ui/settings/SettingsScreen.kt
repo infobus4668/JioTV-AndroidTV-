@@ -14,8 +14,10 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.*
@@ -33,6 +35,7 @@ import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.tv.material3.Text
 import androidx.tv.material3.MaterialTheme
@@ -50,6 +53,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.filled.Check
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -69,12 +73,23 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
     val epgSyncStatus by mainViewModel.epgSyncStatus.collectAsState()
     val autoplayLastChannel by settingsManager.autoplayLastChannelFlow.collectAsState(initial = false)
     val groupLanguageVariants by settingsManager.groupLanguageVariantsFlow.collectAsState(initial = true)
+    val sortAlphabetical by settingsManager.channelSortAlphabeticalFlow.collectAsState(initial = false)
     val setupMode by settingsManager.setupModeFlow.collectAsState(initial = null)
     val serverUrl by settingsManager.serverUrlFlow.collectAsState(initial = "")
     val serverRefreshing by mainViewModel.serverRefreshing.collectAsState()
     val serverRefreshMsg by mainViewModel.serverRefreshMsg.collectAsState()
 
+    // Channel-language filter (moved here from the Home screen): multi-select, applies to the
+    // home grid AND the player's zap list everywhere via MainViewModel.
+    val availableChannelLanguages by mainViewModel.availableLanguages.collectAsState()
+    val channelLanguageFilter by mainViewModel.languageFilter.collectAsState()
+    val allChannels by mainViewModel.channels.collectAsState()
+    val channelLanguageCounts = remember(allChannels) {
+        allChannels.groupingBy { it.language }.eachCount()
+    }
+
     var showLanguagePicker by remember { mutableStateOf(false) }
+    var showChannelLangPicker by remember { mutableStateOf(false) }
     var showQualityPicker by remember { mutableStateOf(false) }
     var showPlayerResizeModePicker by remember { mutableStateOf(false) }
     var showBufferPicker by remember { mutableStateOf(false) }
@@ -117,6 +132,7 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
                 if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.Back) {
                     when {
                         showLanguagePicker -> { showLanguagePicker = false; true }
+                        showChannelLangPicker -> { showChannelLangPicker = false; true }
                         showQualityPicker -> { showQualityPicker = false; true }
                         showPlayerResizeModePicker -> { showPlayerResizeModePicker = false; true }
                         showBufferPicker -> { showBufferPicker = false; true }
@@ -208,6 +224,50 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
                     )
                 }
 
+                item { SectionHeader("Channels") }
+
+                item {
+                    SettingsItem(
+                        title = "Channel Languages",
+                        subtitle = if (channelLanguageFilter.isEmpty()) {
+                            "All languages are shown"
+                        } else {
+                            "Showing only: ${channelLanguageFilter.sorted().joinToString(", ")}"
+                        },
+                        value = if (channelLanguageFilter.isEmpty()) "All" else "${channelLanguageFilter.size} selected",
+                        valueColor = TvPrimary,
+                        onClick = { showChannelLangPicker = true }
+                    )
+                }
+
+                item {
+                    SettingsToggle(
+                        title = "Group Language Variants",
+                        subtitle = "Show one tile per channel and pick the language in the player (e.g. Star Sports Hindi/Tamil/Telugu). Turn off to see every language as its own channel.",
+                        isEnabled = groupLanguageVariants,
+                        onClick = { scope.launch { settingsManager.setGroupLanguageVariants(!groupLanguageVariants) } }
+                    )
+                }
+
+                item {
+                    SettingsToggle(
+                        title = "Sort Channels A–Z",
+                        subtitle = "Order channel lists alphabetically instead of by channel number (home grid and player)",
+                        isEnabled = sortAlphabetical,
+                        onClick = { scope.launch { settingsManager.setChannelSortAlphabetical(!sortAlphabetical) } }
+                    )
+                }
+
+                item {
+                    SettingsItem(
+                        title = "Refresh Channel List",
+                        subtitle = "Pull the latest channel list from Jio now (new channels, corrected languages)",
+                        value = if (serverRefreshing) "Refreshing…" else (serverRefreshMsg ?: "Refresh"),
+                        valueColor = TvPrimary,
+                        onClick = { mainViewModel.forceRefreshChannels() }
+                    )
+                }
+
                 item { SectionHeader("EPG (Electronic Program Guide)") }
 
                 item {
@@ -255,17 +315,6 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
                     )
                 }
 
-                item { SectionHeader("Channels") }
-
-                item {
-                    SettingsToggle(
-                        title = "Group Language Variants",
-                        subtitle = "Show one tile per channel and pick the language in the player (e.g. Star Sports Hindi/Tamil/Telugu). Turn off to see every language as its own channel.",
-                        isEnabled = groupLanguageVariants,
-                        onClick = { scope.launch { settingsManager.setGroupLanguageVariants(!groupLanguageVariants) } }
-                    )
-                }
-
                 item { SectionHeader("Playback") }
 
                 item {
@@ -309,8 +358,8 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
 
                 item {
                     SettingsItem(
-                        title = "Default Audio Language",
-                        subtitle = "Primary audio track language",
+                        title = "Preferred Audio Language",
+                        subtitle = "Audio track auto-selected on multi-audio channels (playback only — use Channel Languages to filter the channel lists)",
                         value = languages.find { it.first == language }?.second ?: language,
                         valueColor = TvPrimary,
                         onClick = { showLanguagePicker = true }
@@ -363,6 +412,17 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
 
 
         // ─── Dialogs ───
+        if (showChannelLangPicker) {
+            ChannelLanguagesDialog(
+                available = availableChannelLanguages,
+                selected = channelLanguageFilter,
+                counts = channelLanguageCounts,
+                onToggle = { mainViewModel.toggleLanguageFilter(it) },
+                onClear = { mainViewModel.setLanguageFilter(emptySet()) },
+                onDismiss = { showChannelLangPicker = false }
+            )
+        }
+
         if (showLanguagePicker) {
             Dialog(onDismissRequest = { showLanguagePicker = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
                 PickerDialog(
@@ -475,6 +535,162 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Multi-select picker for the global channel-language filter (none selected = all languages).
+ * Selection persists and applies to every channel list: home grid, EPG view and the player's
+ * channel-switching list.
+ */
+@Composable
+private fun ChannelLanguagesDialog(
+    available: List<String>,
+    selected: Set<String>,
+    counts: Map<String, Int>,
+    onToggle: (String) -> Unit,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(
+            modifier = Modifier
+                .width(480.dp)
+                .background(TvDarkSurface, RoundedCornerShape(16.dp))
+                .padding(24.dp)
+        ) {
+            Text(
+                "Channel Languages",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = TvOnBackground
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                "Show channels only in the selected languages — applies everywhere",
+                style = MaterialTheme.typography.bodySmall,
+                color = TvOnSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+                // weight(fill=false) so the LIST yields space to the Done button on short TV panels
+                // (1080p TVs expose ~540dp of height; a fixed 380dp list left the button crushed
+                // flat with its letters unrenderable). Non-weighted children measure first, so the
+                // button always keeps its intrinsic height and the list scrolls instead.
+                modifier = Modifier.weight(1f, fill = false).heightIn(max = 420.dp)
+            ) {
+                item {
+                    LanguageToggleRow(
+                        label = "All Languages",
+                        selected = selected.isEmpty(),
+                        count = null,
+                        onClick = onClear
+                    )
+                }
+                items(available, key = { it }) { lang ->
+                    LanguageToggleRow(
+                        label = lang,
+                        selected = lang in selected,
+                        count = counts[lang],
+                        onClick = { onToggle(lang) }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            // Light pill with DARK letters + purple focus ring. This is the only bright-fill button
+            // in the app: white-on-purple text washed out to invisible on real TV panels (limited
+            // RGB range / dynamic contrast) while rendering fine on emulators — dark-on-light
+            // survives any TV picture processing.
+            Surface(
+                onClick = onDismiss,
+                modifier = Modifier.fillMaxWidth(),
+                shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
+                scale = ClickableSurfaceDefaults.scale(focusedScale = 1.02f),
+                colors = ClickableSurfaceDefaults.colors(
+                    containerColor = TvOnBackground,
+                    focusedContainerColor = Color.White,
+                    contentColor = TvDarkBackground,
+                    focusedContentColor = TvDarkBackground
+                ),
+                border = ClickableSurfaceDefaults.border(
+                    focusedBorder = androidx.tv.material3.Border(
+                        border = androidx.compose.foundation.BorderStroke(3.dp, TvFocusBorder),
+                        shape = RoundedCornerShape(10.dp)
+                    )
+                )
+            ) {
+                Text(
+                    "Done",
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                    color = TvDarkBackground,
+                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.titleMedium,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+    }
+}
+
+/** One checkable language row inside [ChannelLanguagesDialog], with its channel count. */
+@Composable
+private fun LanguageToggleRow(
+    label: String,
+    selected: Boolean,
+    count: Int?,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        onClick = onClick,
+        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),
+        colors = ClickableSurfaceDefaults.colors(
+            containerColor = if (selected) TvPrimaryContainer.copy(alpha = 0.3f) else Color.Transparent,
+            focusedContainerColor = TvDarkSurfaceVariant
+        ),
+        border = ClickableSurfaceDefaults.border(
+            focusedBorder = androidx.tv.material3.Border(
+                border = androidx.compose.foundation.BorderStroke(1.dp, TvPrimary.copy(alpha = 0.4f)),
+                shape = RoundedCornerShape(8.dp)
+            )
+        )
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp).fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(18.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(if (selected) TvPrimary else Color.Transparent)
+                    .border(1.dp, if (selected) TvPrimary else TvOnSurfaceVariant, RoundedCornerShape(4.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                if (selected) {
+                    androidx.tv.material3.Icon(
+                        Icons.Default.Check,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(12.dp)
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(10.dp))
+            Text(
+                label,
+                color = if (selected) TvPrimary else TvOnSurface,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                modifier = Modifier.weight(1f)
+            )
+            if (count != null) {
+                Text("· $count", style = MaterialTheme.typography.labelMedium, color = TvOnSurfaceVariant)
             }
         }
     }
@@ -620,7 +836,9 @@ private fun PickerDialog(
 
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(4.dp),
-                modifier = Modifier.heightIn(max = 400.dp)
+                // Same short-screen fix as the Channel Languages dialog: let the Cancel button keep
+                // its height and the list take the leftovers.
+                modifier = Modifier.weight(1f, fill = false).heightIn(max = 400.dp)
             ) {
                 items(options.size) { index ->
                     val (value, label) = options[index]

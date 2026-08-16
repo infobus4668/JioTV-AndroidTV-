@@ -21,8 +21,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
         // Sentinel category values for the Home sidebar. Real Jio categories never collide with these.
-        const val GROUP_ALL: String = "__ALL__"
-        const val GROUP_FAVORITES: String = "__FAVORITES__"
+        const val GROUP_ALL: String = com.fenyx.jtv.data.ChannelFilter.GROUP_ALL
+        const val GROUP_FAVORITES: String = com.fenyx.jtv.data.ChannelFilter.GROUP_FAVORITES
     }
 
     private val settingsManager = SettingsManager(application)
@@ -65,6 +65,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _selectedGroup = MutableStateFlow<String?>(null)
     val selectedGroup: StateFlow<String?> = _selectedGroup.asStateFlow()
 
+    // Persisted language filter (multi-select, empty = show all) applied on top of the group filter.
+    private val _languageFilter = MutableStateFlow<Set<String>>(emptySet())
+    val languageFilter: StateFlow<Set<String>> = _languageFilter.asStateFlow()
+
+    // Distinct languages present in the channel list (for the picker).
+    private val _availableLanguages = MutableStateFlow<List<String>>(emptyList())
+    val availableLanguages: StateFlow<List<String>> = _availableLanguages.asStateFlow()
+
+    // Live counts for the Home category chips: per-category under the language filter — each chip
+    // shows what selecting it would yield.
+    private val _categoryCounts = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val categoryCounts: StateFlow<Map<String, Int>> = _categoryCounts.asStateFlow()
+
+    // Sort mode shared by every channel list (Settings toggle): false = channel number, true = A–Z.
+    private val _sortAlphabetical = MutableStateFlow(false)
+    val sortAlphabetical: StateFlow<Boolean> = _sortAlphabetical.asStateFlow()
+
     private val _filteredChannels = MutableStateFlow<List<Channel>>(emptyList())
     val filteredChannels: StateFlow<List<Channel>> = _filteredChannels.asStateFlow()
 
@@ -80,6 +97,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             settingsManager.favoriteChannelsFlow.collect { favorites ->
                 _favoriteChannels.value = favorites
+            }
+        }
+        viewModelScope.launch {
+            settingsManager.languageFilterFlow.collect { _languageFilter.value = it }
+        }
+        viewModelScope.launch {
+            settingsManager.channelSortAlphabeticalFlow.collect { _sortAlphabetical.value = it }
+        }
+        viewModelScope.launch {
+            _allChannels.collect { all ->
+                _availableLanguages.value = com.fenyx.jtv.data.JioLanguages.availableIn(all)
             }
         }
         // Apply language-variant collapsing. Depends ONLY on the channel list and the toggle (both
@@ -102,14 +130,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         // Compute filtered/sorted channels reactively in the ViewModel (not in Compose)
         viewModelScope.launch {
-            combine(_displayChannels, _selectedGroup, _favoriteChannels) { all, group, favs ->
-                val list = when (group) {
-                    null, GROUP_ALL -> all
-                    GROUP_FAVORITES -> all.filter { favs.contains(it.id) }
-                    else -> all.filter { it.group == group }
-                }
-                list.sortedWith(compareByDescending<Channel> { favs.contains(it.id) }.thenBy { it.channelNumber })
-            }.collect { _filteredChannels.value = it }
+            combine(
+                _displayChannels, _selectedGroup, _favoriteChannels,
+                _languageFilter, _sortAlphabetical
+            ) { all, group, favs, langs, sortAz ->
+                com.fenyx.jtv.data.ChannelFilter.apply(all, variantMap, group, favs, langs, sortAz) to
+                    com.fenyx.jtv.data.ChannelFilter.countsByGroup(all, variantMap, favs, langs)
+            }.collect { (filtered, catCounts) ->
+                _filteredChannels.value = filtered
+                _categoryCounts.value = catCounts
+            }
         }
         // NOTE: EPG is intentionally NOT fetched here. Downloading + parsing the XMLTV file on every
         // launch hammered the CPU on low-end TVs and slowed boot. MainScreen triggers fetchEpg() only
@@ -172,16 +202,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Get all channels (unfiltered, collapsed) for the player's channel switching */
     fun getAllChannels(): List<Channel> = _displayChannels.value
 
-    /** Get channels filtered by group for channel switching within a category, sorted by favorites */
+    /** Get channels filtered by group for channel switching within a category, sorted by favorites.
+     *  Applies the same language filter and sort mode as the Home grid so the player's zap list
+     *  loads identically. */
     fun getChannelsByGroup(group: String?): List<Channel> {
-        val source = _displayChannels.value
-        val favorites = _favoriteChannels.value
-        val list = when (group) {
-            null, GROUP_ALL -> source
-            GROUP_FAVORITES -> source.filter { favorites.contains(it.id) }
-            else -> source.filter { it.group == group }
-        }
-        return list.sortedWith(compareByDescending<Channel> { favorites.contains(it.id) }.thenBy { it.channelNumber })
+        return com.fenyx.jtv.data.ChannelFilter.apply(
+            _displayChannels.value, variantMap, group, _favoriteChannels.value,
+            _languageFilter.value, _sortAlphabetical.value
+        )
+    }
+
+    /** Replaces the persisted language filter (empty set = show all languages). */
+    fun setLanguageFilter(languages: Set<String>) {
+        _languageFilter.value = languages
+        viewModelScope.launch { settingsManager.setLanguageFilter(languages) }
+    }
+
+    /** Adds/removes one language from the persisted filter. */
+    fun toggleLanguageFilter(language: String) {
+        val current = _languageFilter.value
+        setLanguageFilter(if (language in current) current - language else current + language)
     }
 
     fun setSelectedGroup(group: String?) {
@@ -301,5 +341,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun retry() {
         hasLoaded = false
         fetchChannels()
+    }
+
+    /**
+     * Forces a fresh channel-list pull from the network (bypassing the 24h cache), unlike [retry]
+     * which may serve a still-fresh cache. Used by Settings so users can pick up Jio list changes
+     * (new channels, corrected language ids) without waiting for the TTL.
+     */
+    fun forceRefreshChannels() {
+        if (_serverRefreshing.value) return
+        viewModelScope.launch {
+            _serverRefreshing.value = true
+            _serverRefreshMsg.value = null
+            val app = getApplication<Application>()
+            val result = JioApiClient.getMobileChannelList(app, forceNetwork = true)
+            result.getOrNull()?.takeIf { it.isNotEmpty() }?.let { publishChannels(it) }
+            _serverRefreshMsg.value = if (result.isSuccess) "Refreshed" else (result.exceptionOrNull()?.message ?: "Failed")
+            _serverRefreshing.value = false
+            kotlinx.coroutines.delay(4000)
+            _serverRefreshMsg.value = null
+        }
     }
 }

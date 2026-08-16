@@ -152,10 +152,22 @@ fun MainNavigation() {
                 }
                 entry<Player> { playerArgs ->
                     val groups by mainViewModel.groups.collectAsState()
+                    val favoriteChannels by mainViewModel.favoriteChannels.collectAsState()
                     // Reactive (not a one-shot snapshot) so if the player is opened while the collapsed
                     // list is still being built, it recomposes and fills in — no more Settings-and-back
                     // workaround to recover from a "0 channels" launch.
                     val allChannels by mainViewModel.displayChannels.collectAsState()
+
+                    // The player's category sidebar gets the SAME pseudo-categories as Home ("All" and,
+                    // when present, "★ Favorites") so the full list is also browsable mid-playback.
+                    // getChannelsByGroup resolves the sentinels (and applies the language filter/sort).
+                    val playerGroups = androidx.compose.runtime.remember(groups, favoriteChannels) {
+                        buildList {
+                            add(MainViewModel.GROUP_ALL)
+                            if (favoriteChannels.isNotEmpty()) add(MainViewModel.GROUP_FAVORITES)
+                            addAll(groups)
+                        }
+                    }
 
                     // Memoize the expensive per-group grouping + index lookups so they run once per
                     // channel-list change, not on every recomposition (this was a real source of
@@ -164,8 +176,8 @@ fun MainNavigation() {
                         if (playerArgs.group != null) mainViewModel.getChannelsByGroup(playerArgs.group)
                         else allChannels
                     }
-                    val allChannelsByGroup = androidx.compose.runtime.remember(groups, allChannels) {
-                        groups.associateWith { group -> mainViewModel.getChannelsByGroup(group) }
+                    val allChannelsByGroup = androidx.compose.runtime.remember(playerGroups, allChannels) {
+                        playerGroups.associateWith { group -> mainViewModel.getChannelsByGroup(group) }
                     }
                     val filteredIndex = androidx.compose.runtime.remember(channels, allChannels, playerArgs.channelIndex) {
                         val targetChannel = allChannels.getOrNull(playerArgs.channelIndex)
@@ -176,7 +188,7 @@ fun MainNavigation() {
                         channels = channels,
                         initialIndex = filteredIndex,
                         allChannelsByGroup = allChannelsByGroup,
-                        groups = groups,
+                        groups = playerGroups,
                         onBack = { backStack.removeLastOrNull() },
                         onSettings = {
                             backStack.add(Settings)

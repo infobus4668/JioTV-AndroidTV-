@@ -77,6 +77,14 @@ private data class AudioOption(
     val selected: Boolean
 )
 
+/** Display label for a (possibly sentinel) category: "__ALL__" -> "All", "__FAVORITES__" -> "★ Favorites". */
+private fun groupLabel(group: String?): String = when (group) {
+    com.fenyx.jtv.data.ChannelFilter.GROUP_ALL -> "All"
+    com.fenyx.jtv.data.ChannelFilter.GROUP_FAVORITES -> "★ Favorites"
+    null -> "Channels"
+    else -> group
+}
+
 @SuppressLint("SetJavaScriptEnabled")
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
@@ -1365,7 +1373,10 @@ fun TvPlayerScreen(
         ) {
             val catState = rememberLazyListState()
             LaunchedEffect(categorySelectedIndex) {
-                catState.animateScrollToItem(categorySelectedIndex.coerceAtLeast(0))
+                // Position the selected category two rows down from the top so the entries above it
+                // (All / ★ Favorites when near the top of the list) stay visible instead of being
+                // scrolled out of the viewport.
+                catState.animateScrollToItem((categorySelectedIndex - 2).coerceAtLeast(0))
             }
             Box(
                 modifier = Modifier
@@ -1417,7 +1428,7 @@ fun TvPlayerScreen(
                                         Spacer(modifier = Modifier.width(8.dp))
                                     }
                                     Text(
-                                        group,
+                                        groupLabel(group),
                                         color = if (isSelected || isCurrentGroup) TvPrimary else Color.White,
                                         fontWeight = if (isSelected || isCurrentGroup) FontWeight.Bold else FontWeight.Normal,
                                         maxLines = 1,
@@ -1454,7 +1465,7 @@ fun TvPlayerScreen(
             ) {
                 Column {
                     Text(
-                        currentGroup ?: "Channels",
+                        groupLabel(currentGroup),
                         style = MaterialTheme.typography.titleMedium,
                         color = Color.White,
                         fontWeight = FontWeight.Bold,
@@ -1571,7 +1582,9 @@ fun TvPickerDialog(
 
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(4.dp),
-                modifier = Modifier.heightIn(max = 400.dp)
+                // weight(fill=false): on short TV panels (~540dp usable) a fixed-max list squeezed
+                // the Cancel button flat; now the list yields space and scrolls instead.
+                modifier = Modifier.weight(1f, fill = false).heightIn(max = 400.dp)
             ) {
                 items(options.size) { index ->
                     val (value, label) = options[index]

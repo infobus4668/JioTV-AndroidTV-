@@ -4,12 +4,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -67,6 +67,8 @@ fun MainScreen(
     val epgMode by settingsManager.epgModeFlow.collectAsState(initial = false)
     val epgData by viewModel.epgData.collectAsState()
     val favoriteChannels by viewModel.favoriteChannels.collectAsState()
+    val languageFilter by viewModel.languageFilter.collectAsState()
+    val categoryCounts by viewModel.categoryCounts.collectAsState()
 
     LaunchedEffect(Unit) {
         viewModel.fetchChannels()
@@ -92,175 +94,58 @@ fun MainScreen(
         }
     }
 
-    Row(modifier = modifier.fillMaxSize().background(TvDarkBackground)) {
+    // Layout: horizontal filter chip rows above a full-width grid (Google TV pattern) instead of a
+    // left sidebar. One OK press changes any filter with the grid updating in place behind the
+    // chips — no dialogs, and the grid gets ~2 extra tile columns vs the old 210dp sidebar.
+    Column(modifier = modifier.fillMaxSize().background(TvDarkBackground)) {
 
-        // ─── Left Sidebar (Category Navigation) ───
-        Column(
+        // ─── Top Bar ───
+        Row(
             modifier = Modifier
-                .fillMaxHeight()
-                .width(210.dp)
-                .background(TvDarkSurface)
-                // focusGroup so D-pad Left/Right treats the sidebar as one cluster (predictable
-                // traversal to/from the grid instead of geometry-based zig-zag).
-                .focusGroup()
-                // Overscan-safe top/bottom + a small left inset so focused labels stay in the safe area.
-                .padding(start = 12.dp, top = TvDimens.OverscanVertical, bottom = TvDimens.OverscanVertical)
+                .fillMaxWidth()
+                .padding(
+                    start = TvDimens.OverscanHorizontal,
+                    end = TvDimens.OverscanHorizontal,
+                    top = TvDimens.SpaceSm
+                )
+                .focusGroup(),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-
-
-            // Search entry — a D-pad-friendly way to find one of ~1300 channels by name.
-            Surface(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
-                onClick = onSearchClick,
-                shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
-                scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),
-                colors = ClickableSurfaceDefaults.colors(
-                    containerColor = Color.Transparent,
-                    focusedContainerColor = TvDarkSurfaceVariant
-                ),
-                border = ClickableSurfaceDefaults.border(
-                    focusedBorder = androidx.tv.material3.Border(
-                        border = androidx.compose.foundation.BorderStroke(2.dp, TvFocusBorder),
-                        shape = RoundedCornerShape(8.dp)
-                    )
+            TopBarIconButton(Icons.Default.Search, "Search", tint = TvPrimary, onClick = onSearchClick)
+            // Language filtering lives in Settings now; this indicator appears only while a filter
+            // is active so it's obvious why the list is shorter — OK jumps straight to Settings.
+            if (languageFilter.isNotEmpty()) {
+                Spacer(modifier = Modifier.width(TvDimens.SpaceSm))
+                TvFilterChip(
+                    text = "Languages · ${languageFilter.size}",
+                    count = null,
+                    selected = true,
+                    onClick = onSettingsClick
                 )
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-                ) {
-                    Icon(Icons.Default.Search, contentDescription = "Search", tint = TvPrimary, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text("Search", color = TvOnSurface, style = MaterialTheme.typography.bodyMedium)
-                }
             }
-            Spacer(modifier = Modifier.height(4.dp))
-
-            // "All" + "Favorites" pseudo-categories precede the real Jio categories.
-            val sidebarGroups = remember(groups, favoriteChannels) {
-                buildList {
-                    add(MainViewModel.GROUP_ALL)
-                    if (favoriteChannels.isNotEmpty()) add(MainViewModel.GROUP_FAVORITES)
-                    addAll(groups)
-                }
-            }
-
-            // Category list. focusRestorer remembers the last-focused category so returning to the
-            // sidebar lands where you left it, not back at the top.
-            LazyColumn(modifier = Modifier.weight(1f).focusRestorer()) {
-                items(sidebarGroups) { group ->
-                    val isSelected = selectedGroup == group ||
-                        (selectedGroup == null && group == MainViewModel.GROUP_ALL)
-                    val label = when (group) {
-                        MainViewModel.GROUP_ALL -> "All"
-                        MainViewModel.GROUP_FAVORITES -> "★ Favorites"
-                        else -> group
-                    }
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 2.dp),
-                        onClick = { viewModel.setSelectedGroup(group) },
-                        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
-                        // Full-width sidebar rows can't scale without clipping, so the focus cue is a
-                        // bright border + fill (clearly visible at 10 feet).
-                        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),
-                        colors = ClickableSurfaceDefaults.colors(
-                            containerColor = if (isSelected) TvPrimaryContainer.copy(alpha = 0.3f) else Color.Transparent,
-                            focusedContainerColor = TvDarkSurfaceVariant
-                        ),
-                        border = ClickableSurfaceDefaults.border(
-                            focusedBorder = androidx.tv.material3.Border(
-                                border = androidx.compose.foundation.BorderStroke(2.dp, TvFocusBorder),
-                                shape = RoundedCornerShape(8.dp)
-                            )
-                        )
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-
-                            Text(
-                                text = label,
-                                color = if (isSelected) TvPrimary else TvOnSurface,
-                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Bottom actions
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(1.dp)
-                    .padding(horizontal = 16.dp)
-                    .background(TvDarkSurfaceVariant)
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-
-            // Refresh
-            Surface(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
-                onClick = { viewModel.retry() },
-                shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
-                scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),
-                colors = ClickableSurfaceDefaults.colors(
-                    containerColor = Color.Transparent,
-                    focusedContainerColor = TvDarkSurfaceVariant
-                ),
-                border = ClickableSurfaceDefaults.border(
-                    focusedBorder = androidx.tv.material3.Border(
-                        border = androidx.compose.foundation.BorderStroke(2.dp, TvFocusBorder),
-                        shape = RoundedCornerShape(8.dp)
-                    )
-                )
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-                ) {
-                    Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = TvOnSurfaceVariant, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text("Refresh", color = TvOnSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
-                }
-            }
-
-            // Settings
-            Surface(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
-                onClick = onSettingsClick,
-                shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
-                scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),
-                colors = ClickableSurfaceDefaults.colors(
-                    containerColor = Color.Transparent,
-                    focusedContainerColor = TvDarkSurfaceVariant
-                ),
-                border = ClickableSurfaceDefaults.border(
-                    focusedBorder = androidx.tv.material3.Border(
-                        border = androidx.compose.foundation.BorderStroke(2.dp, TvFocusBorder),
-                        shape = RoundedCornerShape(8.dp)
-                    )
-                )
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-                ) {
-                    Icon(Icons.Default.Settings, contentDescription = "Settings", tint = TvOnSurfaceVariant, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text("Settings", color = TvOnSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
-                }
-            }
+            Spacer(modifier = Modifier.weight(1f))
+            TopBarIconButton(Icons.Default.Refresh, "Refresh", tint = TvOnSurfaceVariant, onClick = { viewModel.retry() })
+            Spacer(modifier = Modifier.width(TvDimens.SpaceSm))
+            TopBarIconButton(Icons.Default.Settings, "Settings", tint = TvOnSurfaceVariant, onClick = onSettingsClick)
         }
 
-        // ─── Right Content Area (Channel Grid) ───
-        Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+        // ─── Category chips (single-select; count = channels after the language filter) ───
+        val chipGroups = remember(groups, favoriteChannels) {
+            buildList {
+                add(MainViewModel.GROUP_ALL)
+                if (favoriteChannels.isNotEmpty()) add(MainViewModel.GROUP_FAVORITES)
+                addAll(groups)
+            }
+        }
+        CategoryChipRow(
+            groups = chipGroups,
+            selectedGroup = selectedGroup,
+            counts = categoryCounts,
+            onSelect = { viewModel.setSelectedGroup(it) }
+        )
+
+        // ─── Content Area (Channel Grid) ───
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             if (isLoading) {
                 Column(
                     modifier = Modifier.align(Alignment.Center),
@@ -329,15 +214,19 @@ fun MainScreen(
 
                     if (filteredChannels.isEmpty()) {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("No channels in this category", color = TvOnSurfaceVariant)
+                            Text(
+                                if (languageFilter.isEmpty()) "No channels in this category"
+                                else "No channels match the selected language${if (languageFilter.size == 1) "" else "s"}",
+                                color = TvOnSurfaceVariant
+                            )
                         }
                     } else if (epgMode) {
                         LazyColumn(
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                             modifier = Modifier.focusRestorer(),
                             contentPadding = PaddingValues(
-                                start = TvDimens.SpaceMd, end = TvDimens.OverscanHorizontal,
-                                top = TvDimens.OverscanVertical, bottom = TvDimens.OverscanVertical
+                                start = TvDimens.OverscanHorizontal, end = TvDimens.OverscanHorizontal,
+                                top = TvDimens.SpaceSm, bottom = TvDimens.OverscanVertical
                             )
                         ) {
                             itemsIndexed(items = filteredChannels, key = { _, ch -> ch.id }) { index, channel ->
@@ -367,11 +256,11 @@ fun MainScreen(
                             // focusRestorer keeps your place in the grid when you leave and come back
                             // (e.g. return from the player), instead of snapping to the first card.
                             modifier = Modifier.focusRestorer(),
-                            // Overscan-safe: extra room on the right/top/bottom so focused cards (which
-                            // scale up) and the last column aren't clipped by the panel edge.
+                            // Overscan-safe: extra room on the left/right/top/bottom so focused cards
+                            // (which scale up) and edge columns aren't clipped by the panel edge.
                             contentPadding = PaddingValues(
-                                start = TvDimens.SpaceMd, end = TvDimens.OverscanHorizontal,
-                                top = TvDimens.OverscanVertical, bottom = TvDimens.OverscanVertical
+                                start = TvDimens.OverscanHorizontal, end = TvDimens.OverscanHorizontal,
+                                top = TvDimens.SpaceSm, bottom = TvDimens.OverscanVertical
                             )
                         ) {
                             itemsIndexed(items = filteredChannels, key = { _, ch -> ch.id }) { index, channel ->
@@ -615,6 +504,125 @@ fun EpgChannelRow(
                     }
                 }
             }
+        }
+    }
+}
+
+/** Compact icon-only top-bar button (Search / Refresh / Settings). */
+@Composable
+private fun TopBarIconButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    tint: Color,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.05f),
+        colors = ClickableSurfaceDefaults.colors(
+            containerColor = TvDarkSurface,
+            focusedContainerColor = TvDarkSurfaceVariant
+        ),
+        border = ClickableSurfaceDefaults.border(
+            focusedBorder = androidx.tv.material3.Border(
+                border = androidx.compose.foundation.BorderStroke(2.dp, TvFocusBorder),
+                shape = RoundedCornerShape(10.dp)
+            )
+        )
+    ) {
+        Box(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
+            Icon(icon, contentDescription = contentDescription, tint = tint, modifier = Modifier.size(22.dp))
+        }
+    }
+}
+
+/** Pill chip used by the category row and the active-filter indicator. [count] renders as a "· n" suffix. */
+@Composable
+private fun TvFilterChip(
+    text: String,
+    count: Int?,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(20.dp)),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.05f),
+        colors = ClickableSurfaceDefaults.colors(
+            containerColor = if (selected) TvPrimaryContainer.copy(alpha = 0.45f) else TvDarkSurface,
+            focusedContainerColor = TvPrimaryContainer
+        ),
+        border = ClickableSurfaceDefaults.border(
+            focusedBorder = androidx.tv.material3.Border(
+                border = androidx.compose.foundation.BorderStroke(2.dp, TvFocusBorder),
+                shape = RoundedCornerShape(20.dp)
+            )
+        )
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text,
+                color = if (selected) TvPrimary else TvOnSurface,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1
+            )
+            if (count != null) {
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    "· $count",
+                    color = if (selected) TvPrimary.copy(alpha = 0.8f) else TvOnSurfaceVariant,
+                    style = MaterialTheme.typography.labelMedium
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Single-select category chips with live channel counts (under the current language filter). The
+ * selected chip auto-scrolls into view, so a restored category like "Sports" is visible on entry.
+ */
+@Composable
+private fun CategoryChipRow(
+    groups: List<String>,
+    selectedGroup: String?,
+    counts: Map<String, Int>,
+    onSelect: (String) -> Unit
+) {
+    if (groups.isEmpty()) return
+    val listState = rememberLazyListState()
+    LaunchedEffect(selectedGroup, groups) {
+        val idx = groups.indexOf(selectedGroup).takeIf { it >= 0 } ?: 0
+        runCatching { listState.animateScrollToItem(idx) }
+    }
+    LazyRow(
+        state = listState,
+        modifier = Modifier.fillMaxWidth().focusGroup().focusRestorer(),
+        horizontalArrangement = Arrangement.spacedBy(TvDimens.SpaceSm),
+        contentPadding = PaddingValues(
+            start = TvDimens.OverscanHorizontal, end = TvDimens.OverscanHorizontal,
+            top = TvDimens.SpaceSm, bottom = 0.dp
+        )
+    ) {
+        itemsIndexed(groups, key = { _, g -> g }) { _, group ->
+            val isSelected = selectedGroup == group ||
+                (selectedGroup == null && group == MainViewModel.GROUP_ALL)
+            val label = when (group) {
+                MainViewModel.GROUP_ALL -> "All"
+                MainViewModel.GROUP_FAVORITES -> "★ Favorites"
+                else -> group
+            }
+            TvFilterChip(
+                text = label,
+                count = counts[group],
+                selected = isSelected,
+                onClick = { onSelect(group) }
+            )
         }
     }
 }

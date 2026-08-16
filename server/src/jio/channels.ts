@@ -10,12 +10,15 @@ export interface Channel {
   channelNumber: number;
 }
 
-// JioTV language-id → name (well-known ids).
+// JioTV language-id → name, from the dictionary API's authoritative `languageIdMapping`
+// (…/apis/v1.3/dictionary/dictionary?langId=6), verified against the live channel list
+// (id 8 = "Star Vijay"/"Colors Tamil", id 11 = "TV9 Telugu", id 5 = "Star Jalsha"/"Zee Bangla", …).
+// NOTE: the previous hand-written table disagreed with this from id 5 onward (5=Tamil, 8=Telugu, …)
+// and shipped wrong languages to the web player / M3U playlists.
 const JIO_LANG: Record<string, string> = {
-  "1": "Hindi", "2": "Marathi", "3": "Punjabi", "4": "Urdu", "5": "Tamil", "6": "English",
-  "7": "Malayalam", "8": "Telugu", "9": "Bengali", "10": "Kannada", "11": "Oriya",
-  "12": "Gujarati", "13": "Assamese", "14": "Nepali", "15": "French", "16": "Bhojpuri",
-  "17": "Kokborok", "18": "Odia", "19": "Rajasthani", "23": "Arabic",
+  "1": "Hindi", "2": "Marathi", "3": "Punjabi", "4": "Urdu", "5": "Bengali", "6": "English",
+  "7": "Malayalam", "8": "Tamil", "9": "Gujarati", "10": "Odia", "11": "Telugu",
+  "12": "Bhojpuri", "13": "Kannada", "14": "Assamese", "15": "Nepali", "16": "French",
 };
 
 const CHANNEL_TTL_MS = 24 * 60 * 60 * 1000;

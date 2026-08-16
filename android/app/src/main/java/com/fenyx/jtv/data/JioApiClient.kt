@@ -258,7 +258,17 @@ object JioApiClient {
                     streamUrl = obj.getString("streamUrl"),
                     isDrm = obj.getBoolean("isDrm"),
                     channelNumber = obj.getInt("channelNumber"),
-                    licenseUrl = if (obj.has("licenseUrl")) obj.getString("licenseUrl") else null
+                    licenseUrl = if (obj.has("licenseUrl")) obj.getString("licenseUrl") else null,
+                    // Trust the stored language only alongside a languageId (that cache was resolved
+                    // with the current mapping). Entries without an id — pre-feature caches AND
+                    // caches written with the earlier wrong id→name table — re-resolve from the
+                    // name token until the next network refresh overwrites them.
+                    language = run {
+                        val langId = obj.optInt("languageId", -1)
+                        if (langId > 0 && obj.has("language")) obj.getString("language")
+                        else JioLanguages.resolve(langId.takeIf { it > 0 }, obj.getString("name"))
+                    },
+                    languageId = obj.optInt("languageId", -1)
                 ))
             }
             channels.ifEmpty { null }
@@ -268,10 +278,21 @@ object JioApiClient {
         }
     }
 
-    /** True if a cache exists and is younger than the TTL. */
+    /**
+     * True if a cache exists, is younger than the TTL, AND carries language ids. The language-id
+     * requirement forces exactly one revalidation of caches from builds that stored no id or a
+     * wrong id→name mapping, so bad language data self-heals instead of persisting for 24h.
+     */
     fun isChannelCacheFresh(context: android.content.Context): Boolean {
         val cacheFile = channelCacheFile(context)
-        return cacheFile.exists() && System.currentTimeMillis() - cacheFile.lastModified() < CHANNEL_CACHE_TTL_MS
+        if (!cacheFile.exists() ||
+            System.currentTimeMillis() - cacheFile.lastModified() >= CHANNEL_CACHE_TTL_MS
+        ) return false
+        return try {
+            cacheFile.readText().contains("\"languageId\"")
+        } catch (e: Exception) {
+            false
+        }
     }
 
     /**
@@ -290,30 +311,34 @@ object JioApiClient {
 
             // Fetch dictionary
             var categoryMap = mapOf<String, String>()
+            var languageMap = mapOf<String, String>()
             try {
                 val dictUrl = URL("https://jiotvapi.cdn.jio.com/apis/v1.3/dictionary/dictionary?langId=6")
                 val dictConn = dictUrl.openConnection() as HttpURLConnection
                 dictConn.requestMethod = "GET"
                 dictConn.setRequestProperty("User-Agent", USER_AGENT)
                 if (dictConn.responseCode in 200..299) {
-                    val map = mutableMapOf<String, String>()
+                    val catMap = mutableMapOf<String, String>()
+                    val langMap = mutableMapOf<String, String>()
                     val reader = android.util.JsonReader(dictConn.inputStream.bufferedReader())
                     reader.beginObject()
                     while (reader.hasNext()) {
                         val key = reader.nextName()
-                        if (key == "channelCategoryMapping") {
-                            reader.beginObject()
-                            while (reader.hasNext()) {
-                                map[reader.nextName()] = reader.nextString()
+                        when (key) {
+                            "channelCategoryMapping", "languageIdMapping" -> {
+                                // Both are id -> display-name objects; route into the right map.
+                                val target = if (key == "channelCategoryMapping") catMap else langMap
+                                reader.beginObject()
+                                while (reader.hasNext()) target[reader.nextName()] = reader.nextString()
+                                reader.endObject()
                             }
-                            reader.endObject()
-                        } else {
-                            reader.skipValue()
+                            else -> reader.skipValue()
                         }
                     }
                     reader.endObject()
                     reader.close()
-                    categoryMap = map
+                    categoryMap = catMap
+                    languageMap = langMap
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to fetch dictionary", e)
@@ -338,12 +363,14 @@ object JioApiClient {
                                     var channelName = ""
                                     var logoUrl = ""
                                     var catId = ""
+                                    var langId = -1
                                     while (reader.hasNext()) {
                                         when (reader.nextName()) {
                                             "channel_id" -> channelId = try { reader.nextInt() } catch(e: Exception) { reader.nextString().toIntOrNull() ?: 0 }
                                             "channel_name" -> channelName = reader.nextString()
                                             "logoUrl" -> logoUrl = reader.nextString()
                                             "channelCategoryId" -> catId = try { reader.nextString() } catch(e: Exception) { reader.nextInt().toString() }
+                                            "channelLanguageId" -> langId = try { reader.nextInt() } catch(e: Exception) { reader.nextString().toIntOrNull() ?: -1 }
                                             else -> reader.skipValue()
                                         }
                                     }
@@ -356,7 +383,9 @@ object JioApiClient {
                                             group = categoryMap[catId] ?: "Other",
                                             isDrm = true,
                                             channelNumber = channelId,
-                                            streamUrl = ""
+                                            streamUrl = "",
+                                            language = JioLanguages.resolve(langId.takeIf { it > 0 }, channelName, languageMap),
+                                            languageId = langId
                                         )
                                     }
                                 }
@@ -401,6 +430,8 @@ object JioApiClient {
                     obj.put("streamUrl", ch.streamUrl)
                     obj.put("isDrm", ch.isDrm)
                     obj.put("channelNumber", ch.channelNumber)
+                    obj.put("language", ch.language)
+                    if (ch.languageId > 0) obj.put("languageId", ch.languageId)
                     ch.licenseUrl?.let { obj.put("licenseUrl", it) }
                     jsonArray.put(obj)
                 }
