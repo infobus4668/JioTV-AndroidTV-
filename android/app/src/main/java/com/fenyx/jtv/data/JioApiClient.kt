@@ -1,0 +1,672 @@
+package com.fenyx.jtv.data
+
+import android.util.Base64
+import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.io.OutputStreamWriter
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.UUID
+import kotlinx.coroutines.flow.first
+
+object JioApiClient {
+    private const val TAG = "JioApiClient"
+
+    // Default Headers
+    private const val USER_AGENT = "okhttp/4.2.2"
+    private const val APP_NAME = "RJIL_JioTV"
+    private const val OS = "android"
+    private const val DEVICE_TYPE = "phone"
+    private const val HOST = "jiotvapi.media.jio.com"
+
+    data class AuthData(
+        val ssoToken: String,
+        val authToken: String,
+        val crmid: String,
+        val uniqueId: String,
+        val deviceId: String,
+        val userId: String,
+        // Distinct from authToken — captured at OTP login and required (as a body field) by the
+        // refreshtoken endpoint. Empty for server-mode logins (the server refreshes centrally).
+        val refreshToken: String = ""
+    )
+
+    data class StreamData(
+        val streamUrl: String,
+        val licenseUrl: String,
+        val isMpd: Boolean,
+        val headers: Map<String, String>,
+        val licenseHeaders: Map<String, String>
+    )
+
+    /**
+     * Catch-up (VOD replay) parameters taken from an EPG programme. Mirrors the companion server's
+     * working format byte-for-byte (server/src/jio/stream.ts) — begin/end are epoch MILLISECONDS
+     * and Jio echoes them into the replay URL's begin= timestamp.
+     */
+    data class CatchupParams(
+        val programId: String,
+        val srno: String,
+        val beginMs: Long,
+        val endMs: Long,
+        val showtime: String
+    )
+
+    suspend fun sendOTP(mobile: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val formattedMobile = if (!mobile.startsWith("+91")) "+91$mobile" else mobile
+            val base64Mobile = Base64.encodeToString(formattedMobile.toByteArray(), Base64.NO_WRAP)
+            
+            val url = URL("https://jiotvapi.media.jio.com/userservice/apis/v1/loginotp/send")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("user-agent", USER_AGENT)
+            connection.setRequestProperty("os", OS)
+            connection.setRequestProperty("host", HOST)
+            connection.setRequestProperty("devicetype", DEVICE_TYPE)
+            connection.setRequestProperty("appname", APP_NAME)
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.doOutput = true
+
+            val body = JSONObject().apply {
+                put("number", base64Mobile)
+            }.toString()
+
+            val writer = OutputStreamWriter(connection.outputStream)
+            writer.write(body)
+            writer.flush()
+            writer.close()
+
+            val responseCode = connection.responseCode
+            if (responseCode == 204) {
+                Result.success(Unit)
+            } else {
+                val errorStream = connection.errorStream ?: connection.inputStream
+                val errorText = errorStream.bufferedReader().use { it.readText() }
+                Log.e(TAG, "sendOTP failed: $responseCode - $errorText")
+                Result.failure(Exception("Failed to send OTP: $responseCode"))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception in sendOTP", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun verifyOTP(mobile: String, otp: String): Result<AuthData> = withContext(Dispatchers.IO) {
+        try {
+            val formattedMobile = if (!mobile.startsWith("+91")) "+91$mobile" else mobile
+            val base64Mobile = Base64.encodeToString(formattedMobile.toByteArray(), Base64.NO_WRAP)
+            val androidId = UUID.randomUUID().toString()
+
+            val url = URL("https://jiotvapi.media.jio.com/userservice/apis/v1/loginotp/verify")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("user-agent", USER_AGENT)
+            connection.setRequestProperty("os", OS)
+            connection.setRequestProperty("devicetype", DEVICE_TYPE)
+            connection.setRequestProperty("appname", APP_NAME)
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.doOutput = true
+
+            val body = JSONObject().apply {
+                put("number", base64Mobile)
+                put("otp", otp)
+                put("deviceInfo", JSONObject().apply {
+                    put("consumptionDeviceName", "unknown sdk_google_atv_x86")
+                    put("info", JSONObject().apply {
+                        put("type", "android")
+                        put("platform", JSONObject().apply { put("name", "generic_x86") })
+                        put("androidId", androidId)
+                    })
+                })
+            }.toString()
+
+            val writer = OutputStreamWriter(connection.outputStream)
+            writer.write(body)
+            writer.flush()
+            writer.close()
+
+            val responseCode = connection.responseCode
+            if (responseCode in 200..299) {
+                val responseText = connection.inputStream.bufferedReader().use { it.readText() }
+                val json = JSONObject(responseText)
+                
+                if (json.has("ssoToken")) {
+                    val sessionObj = json.optJSONObject("sessionAttributes")?.optJSONObject("user")
+                    val authData = AuthData(
+                        ssoToken = json.optString("ssoToken", ""),
+                        authToken = json.optString("authToken", ""),
+                        crmid = sessionObj?.optString("subscriberId", "") ?: "",
+                        uniqueId = sessionObj?.optString("unique", "") ?: "",
+                        deviceId = json.optString("deviceId", ""),
+                        userId = sessionObj?.optString("uid", "") ?: "",
+                        refreshToken = json.optString("refreshToken", "")
+                    )
+                    Result.success(authData)
+                } else {
+                    Result.failure(Exception(json.optString("message", "Unknown error in OTP verification")))
+                }
+            } else {
+                val errorStream = connection.errorStream ?: connection.inputStream
+                val errorText = errorStream.bufferedReader().use { it.readText() }
+                Log.e(TAG, "verifyOTP failed: $responseCode - $errorText")
+                Result.failure(Exception("Failed to verify OTP: $responseCode"))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception in verifyOTP", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun refreshToken(context: android.content.Context): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val settingsManager = com.fenyx.jtv.data.SettingsManager(context)
+            val authData = settingsManager.authDataFlow.first()
+            if (authData == null || authData.ssoToken.isEmpty()) return@withContext Result.failure(Exception("No token"))
+            if (authData.refreshToken.isEmpty()) {
+                // Older logins never stored a refreshToken; the endpoint can't work without it.
+                return@withContext Result.failure(Exception("No refresh token — sign out and sign in again to enable auto-refresh."))
+            }
+
+            val url = URL("https://auth.media.jio.com/tokenservice/apis/v1/refreshtoken?langId=6")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("ssotoken", authData.ssoToken)
+            // The CURRENT access token must ride along as a header, or Jio always answers "refresh token
+            // has expired" even with a valid refreshToken (verified against the live API).
+            connection.setRequestProperty("accesstoken", authData.authToken)
+            connection.setRequestProperty("appName", APP_NAME)
+            connection.setRequestProperty("os", OS)
+            connection.setRequestProperty("devicetype", DEVICE_TYPE)
+            connection.setRequestProperty("deviceId", authData.deviceId)
+            connection.setRequestProperty("uniqueId", authData.uniqueId)
+            connection.setRequestProperty("versionCode", "389")
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.doOutput = true
+
+            val body = JSONObject().apply {
+                put("appName", APP_NAME)
+                put("deviceId", authData.deviceId)
+                put("refreshToken", authData.refreshToken)
+                put("uniqueId", authData.uniqueId)
+            }.toString()
+            OutputStreamWriter(connection.outputStream).use { it.write(body); it.flush() }
+
+            if (connection.responseCode in 200..299) {
+                val responseText = connection.inputStream.bufferedReader().use { it.readText() }
+                val json = JSONObject(responseText)
+                // The refresh service returns a fresh authToken (and sometimes a new ssoToken /
+                // refreshToken). Update whichever are present, keeping the rest.
+                val newSsoToken = json.optString("ssoToken", "")
+                val newAuthToken = json.optString("authToken", "")
+                val newRefreshToken = json.optString("refreshToken", "")
+                if (newSsoToken.isNotEmpty() || newAuthToken.isNotEmpty()) {
+                    settingsManager.saveAuthData(
+                        authData.copy(
+                            ssoToken = newSsoToken.ifEmpty { authData.ssoToken },
+                            authToken = newAuthToken.ifEmpty { authData.authToken },
+                            refreshToken = newRefreshToken.ifEmpty { authData.refreshToken }
+                        )
+                    )
+                    Log.d(TAG, "Token refreshed successfully")
+                    return@withContext Result.success(true)
+                }
+            }
+            val errText = (connection.errorStream ?: connection.inputStream)?.bufferedReader()?.use { it.readText() } ?: ""
+            Log.e(TAG, "Refresh failed ${connection.responseCode}: $errText")
+            Result.failure(Exception("Refresh failed with code ${connection.responseCode}"))
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception in refreshToken", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Refreshes the stored Jio credentials, choosing the right mechanism for the sign-in method:
+     *  - **server mode**: re-pull the centrally-refreshed credentials from the proxy server (the app has
+     *    no Jio refreshToken in this mode). This is what makes a server-mode TV self-heal instead of
+     *    silently failing once the shared token rotates.
+     *  - **phone mode**: use Jio's own refreshtoken endpoint ([refreshToken]).
+     */
+    suspend fun refreshCredentials(context: android.content.Context): Result<Boolean> {
+        val settingsManager = com.fenyx.jtv.data.SettingsManager(context)
+        val mode = settingsManager.setupModeFlow.first()
+        return if (mode == "server" || mode == "jtv") {
+            val urls = ServerClient.candidateUrls(mode, settingsManager.serverUrlFlow.first())
+            val tok = settingsManager.serverTokenFlow.first()
+            if (urls.all { it.isBlank() }) return Result.failure(Exception("No server configured"))
+            ServerClient.refreshCredentials(urls, tok).fold(
+                onSuccess = { auth -> settingsManager.saveAuthData(auth); Result.success(true) },
+                onFailure = { Result.failure(it) }
+            )
+        } else {
+            refreshToken(context)
+        }
+    }
+
+    private const val CHANNEL_CACHE_FILE = "channels_cache.json"
+    const val CHANNEL_CACHE_TTL_MS = 24 * 60 * 60 * 1000L // 24 hours
+
+    private fun channelCacheFile(context: android.content.Context): java.io.File {
+        val cacheDir = context.getExternalFilesDir(null) ?: context.filesDir
+        return java.io.File(cacheDir, CHANNEL_CACHE_FILE)
+    }
+
+    /** Reads the persisted channel list regardless of age. Returns null if there is no usable cache. */
+    fun readChannelCache(context: android.content.Context): List<Channel>? {
+        val cacheFile = channelCacheFile(context)
+        if (!cacheFile.exists()) return null
+        return try {
+            val jsonArray = org.json.JSONArray(cacheFile.readText())
+            val channels = mutableListOf<Channel>()
+            for (i in 0 until jsonArray.length()) {
+                val obj = jsonArray.getJSONObject(i)
+                channels.add(Channel(
+                    id = obj.getString("id"),
+                    name = obj.getString("name"),
+                    logoUrl = obj.getString("logoUrl"),
+                    group = obj.getString("group"),
+                    streamUrl = obj.getString("streamUrl"),
+                    isDrm = obj.getBoolean("isDrm"),
+                    channelNumber = obj.getInt("channelNumber"),
+                    licenseUrl = if (obj.has("licenseUrl")) obj.getString("licenseUrl") else null,
+                    // Trust the stored language only alongside a languageId (that cache was resolved
+                    // with the current mapping). Entries without an id — pre-feature caches AND
+                    // caches written with the earlier wrong id→name table — re-resolve from the
+                    // name token until the next network refresh overwrites them.
+                    language = run {
+                        val langId = obj.optInt("languageId", -1)
+                        if (langId > 0 && obj.has("language")) obj.getString("language")
+                        else JioLanguages.resolve(langId.takeIf { it > 0 }, obj.getString("name"))
+                    },
+                    languageId = obj.optInt("languageId", -1)
+                ))
+            }
+            channels.ifEmpty { null }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to read channel cache", e)
+            null
+        }
+    }
+
+    /**
+     * True if a cache exists, is younger than the TTL, AND carries language ids. The language-id
+     * requirement forces exactly one revalidation of caches from builds that stored no id or a
+     * wrong id→name mapping, so bad language data self-heals instead of persisting for 24h.
+     */
+    fun isChannelCacheFresh(context: android.content.Context): Boolean {
+        val cacheFile = channelCacheFile(context)
+        if (!cacheFile.exists() ||
+            System.currentTimeMillis() - cacheFile.lastModified() >= CHANNEL_CACHE_TTL_MS
+        ) return false
+        return try {
+            cacheFile.readText().contains("\"languageId\"")
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * @param forceNetwork when true, skip the fresh-cache shortcut and always fetch from the network
+     *        (used for background revalidation after a fast cached load).
+     */
+    suspend fun getMobileChannelList(
+        context: android.content.Context,
+        forceNetwork: Boolean = false
+    ): Result<List<Channel>> = withContext(Dispatchers.IO) {
+        try {
+            val cacheFile = channelCacheFile(context)
+            if (!forceNetwork && isChannelCacheFresh(context)) {
+                readChannelCache(context)?.let { return@withContext Result.success(it) }
+            }
+
+            // Fetch dictionary
+            var categoryMap = mapOf<String, String>()
+            var languageMap = mapOf<String, String>()
+            try {
+                val dictUrl = URL("https://jiotvapi.cdn.jio.com/apis/v1.3/dictionary/dictionary?langId=6")
+                val dictConn = dictUrl.openConnection() as HttpURLConnection
+                dictConn.requestMethod = "GET"
+                dictConn.setRequestProperty("User-Agent", USER_AGENT)
+                if (dictConn.responseCode in 200..299) {
+                    val catMap = mutableMapOf<String, String>()
+                    val langMap = mutableMapOf<String, String>()
+                    val reader = android.util.JsonReader(dictConn.inputStream.bufferedReader())
+                    reader.beginObject()
+                    while (reader.hasNext()) {
+                        val key = reader.nextName()
+                        when (key) {
+                            "channelCategoryMapping", "languageIdMapping" -> {
+                                // Both are id -> display-name objects; route into the right map.
+                                val target = if (key == "channelCategoryMapping") catMap else langMap
+                                reader.beginObject()
+                                while (reader.hasNext()) target[reader.nextName()] = reader.nextString()
+                                reader.endObject()
+                            }
+                            else -> reader.skipValue()
+                        }
+                    }
+                    reader.endObject()
+                    reader.close()
+                    categoryMap = catMap
+                    languageMap = langMap
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to fetch dictionary", e)
+            }
+
+            val finalChannelsMap = mutableMapOf<Int, Channel>()
+
+            fun parseChannels(urlStr: String) {
+                try {
+                    val conn = URL(urlStr).openConnection() as HttpURLConnection
+                    conn.requestMethod = "GET"
+                    conn.setRequestProperty("User-Agent", USER_AGENT)
+                    if (conn.responseCode in 200..299) {
+                        val reader = android.util.JsonReader(conn.inputStream.bufferedReader())
+                        reader.beginObject()
+                        while (reader.hasNext()) {
+                            if (reader.nextName() == "result") {
+                                reader.beginArray()
+                                while (reader.hasNext()) {
+                                    reader.beginObject()
+                                    var channelId = 0
+                                    var channelName = ""
+                                    var logoUrl = ""
+                                    var catId = ""
+                                    var langId = -1
+                                    while (reader.hasNext()) {
+                                        when (reader.nextName()) {
+                                            "channel_id" -> channelId = try { reader.nextInt() } catch(e: Exception) { reader.nextString().toIntOrNull() ?: 0 }
+                                            "channel_name" -> channelName = reader.nextString()
+                                            "logoUrl" -> logoUrl = reader.nextString()
+                                            "channelCategoryId" -> catId = try { reader.nextString() } catch(e: Exception) { reader.nextInt().toString() }
+                                            "channelLanguageId" -> langId = try { reader.nextInt() } catch(e: Exception) { reader.nextString().toIntOrNull() ?: -1 }
+                                            else -> reader.skipValue()
+                                        }
+                                    }
+                                    reader.endObject()
+                                    if (channelId > 0 && !finalChannelsMap.containsKey(channelId)) {
+                                        finalChannelsMap[channelId] = Channel(
+                                            id = channelId.toString(),
+                                            name = channelName.ifEmpty { "Unknown" },
+                                            logoUrl = "https://jiotvimages.cdn.jio.com/dare_images/images/$logoUrl",
+                                            group = categoryMap[catId] ?: "Other",
+                                            isDrm = true,
+                                            channelNumber = channelId,
+                                            streamUrl = "",
+                                            language = JioLanguages.resolve(langId.takeIf { it > 0 }, channelName, languageMap),
+                                            languageId = langId
+                                        )
+                                    }
+                                }
+                                reader.endArray()
+                            } else {
+                                reader.skipValue()
+                            }
+                        }
+                        reader.endObject()
+                        reader.close()
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to fetch channels from $urlStr", e)
+                }
+            }
+
+            // Fetch v1.4 (Sony/Zee) and v3.1 (Star/Disney)
+            parseChannels("https://jiotvapi.cdn.jio.com/apis/v1.4/getMobileChannelList/get/?langId=6&devicetype=phone&os=android&usertype=JIO&version=396")
+            parseChannels("https://jiotvapi.cdn.jio.com/apis/v3.1/getMobileChannelList/get/?langId=6&os=android&devicetype=phone&usertype=JIO&version=389")
+
+            if (finalChannelsMap.isEmpty()) {
+                // Network produced nothing — fall back to whatever we have on disk (even if stale)
+                // so a transient outage doesn't wipe the channel list.
+                readChannelCache(context)?.let {
+                    Log.w(TAG, "Channel fetch empty; serving stale cache (${it.size} channels)")
+                    return@withContext Result.success(it)
+                }
+                return@withContext Result.failure(Exception("Failed to fetch channels from endpoints"))
+            }
+
+            val finalChannels = finalChannelsMap.values.sortedBy { it.channelNumber }
+
+            // Save to cache
+            try {
+                val jsonArray = org.json.JSONArray()
+                finalChannels.forEach { ch ->
+                    val obj = JSONObject()
+                    obj.put("id", ch.id)
+                    obj.put("name", ch.name)
+                    obj.put("logoUrl", ch.logoUrl)
+                    obj.put("group", ch.group)
+                    obj.put("streamUrl", ch.streamUrl)
+                    obj.put("isDrm", ch.isDrm)
+                    obj.put("channelNumber", ch.channelNumber)
+                    obj.put("language", ch.language)
+                    if (ch.languageId > 0) obj.put("languageId", ch.languageId)
+                    ch.licenseUrl?.let { obj.put("licenseUrl", it) }
+                    jsonArray.put(obj)
+                }
+                cacheFile.writeText(jsonArray.toString())
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to write cache", e)
+            }
+
+            Result.success(finalChannels)
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception in getMobileChannelList", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Returns the value of the `__hdnea__` query parameter (the Akamai token) from a Jio stream URL,
+     * or "" if absent. Jio appends this token last, so everything after `__hdnea__=` is the token.
+     */
+    fun extractHdneaToken(url: String): String {
+        val marker = "__hdnea__="
+        val i = url.indexOf(marker)
+        return if (i >= 0) url.substring(i + marker.length) else ""
+    }
+
+    /** Parses the `exp=` epoch-seconds out of an `__hdnea__` token; 0 if not found. */
+    fun extractTokenExpiryEpochSec(token: String): Long {
+        val m = Regex("exp=(\\d+)").find(token) ?: return 0
+        return m.groupValues[1].toLongOrNull() ?: 0
+    }
+
+    /** Matches the server's encodeURIComponent semantics exactly (space → %20, not '+'). */
+    private fun formEnc(v: String): String =
+        java.net.URLEncoder.encode(v, "UTF-8").replace("+", "%20")
+
+    /**
+     * Builds the geturl request body: live by default, or a catch-up (VOD replay) request when
+     * [catchup] is present. Pure + internal so the exact wire format stays unit-tested — it must
+     * match server/src/jio/stream.ts, which is verified working against the live API.
+     */
+    internal fun buildPlaybackBody(channelId: String, catchup: CatchupParams?): String {
+        return if (catchup != null) {
+            "stream_type=Catchup&channel_id=$channelId&srno=${formEnc(catchup.srno)}" +
+                "&programId=${formEnc(catchup.programId)}" +
+                "&begin=${catchup.beginMs}&end=${catchup.endMs}&showtime=${formEnc(catchup.showtime)}"
+        } else {
+            "stream_type=Live&channel_id=$channelId"
+        }
+    }
+
+    suspend fun getStreamUrl(
+        context: android.content.Context,
+        channelId: String,
+        authData: AuthData,
+        allowRefreshRetry: Boolean = true,
+        catchup: CatchupParams? = null,
+        // When true, DRM DASH wins over clear HLS even for replays. Used as the SECOND attempt
+        // for a failing replay: some channels' clear `.mp4.urlset` catch-up CDN paths are dead
+        // (the companion server discovered the same for live and falls back to DRM there too).
+        preferDrm: Boolean = false
+    ): Result<StreamData> = withContext(Dispatchers.IO) {
+        try {
+            val url = URL("https://jiotvapi.media.jio.com/playback/apis/v1.1/geturl")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 10000
+            
+            // Construct Sony Headers exactly like the Kodi plugin
+            connection.setRequestProperty("Host", HOST)
+            connection.setRequestProperty("Appkey", "NzNiMDhlYzQyNjJm")
+            connection.setRequestProperty("Devicetype", DEVICE_TYPE)
+            connection.setRequestProperty("Os", OS)
+            connection.setRequestProperty("Deviceid", authData.deviceId)
+            connection.setRequestProperty("Osversion", "13")
+            connection.setRequestProperty("Dm", "Google Pixel 5")
+            connection.setRequestProperty("Uniqueid", authData.deviceId) // Kodi sets this to deviceId
+            connection.setRequestProperty("Usergroup", "tvYR7NSNn7rymo3F")
+            connection.setRequestProperty("Languageid", "6")
+            connection.setRequestProperty("Userid", authData.userId)
+            connection.setRequestProperty("Sid", "892898ba-f9de-4572-b6c2-e717b0ad")
+            connection.setRequestProperty("Crmid", authData.crmid)
+            connection.setRequestProperty("Isott", "false")
+            connection.setRequestProperty("Channel_id", channelId)
+            connection.setRequestProperty("Langid", "6")
+            connection.setRequestProperty("ssoToken", authData.ssoToken)
+            connection.setRequestProperty("Accesstoken", authData.authToken)
+            connection.setRequestProperty("Subscriberid", authData.crmid)
+            connection.setRequestProperty("analyticsId", authData.deviceId)
+            connection.setRequestProperty("Lbcookie", "1")
+            connection.setRequestProperty("Versioncode", "389")
+            connection.setRequestProperty("Accept-Encoding", "gzip, deflate, br")
+            connection.setRequestProperty("user-agent", "okhttp/4.2.2")
+            connection.setRequestProperty("Connection", "keep-alive")
+            connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+            connection.doOutput = true
+
+            val body = buildPlaybackBody(channelId, catchup)
+            val writer = OutputStreamWriter(connection.outputStream)
+            writer.write(body)
+            writer.flush()
+            writer.close()
+
+            val responseCode = connection.responseCode
+            
+            if ((responseCode == 401 || responseCode == 403 || responseCode == 419) && allowRefreshRetry) {
+                // Token might be expired, try to refresh exactly once (allowRefreshRetry = false on the
+                // recursive call) so a persistently-failing token can never cause infinite recursion.
+                // In server mode this re-pulls fresh credentials from the proxy; in phone mode it uses
+                // Jio's refreshtoken endpoint.
+                Log.d(TAG, "Token expired, attempting refresh...")
+                val refreshResult = refreshCredentials(context)
+                if (refreshResult.isSuccess) {
+                    val settingsManager = com.fenyx.jtv.data.SettingsManager(context)
+                    val newAuthData = settingsManager.authDataFlow.first()
+                    if (newAuthData != null) {
+                        return@withContext getStreamUrl(
+                            context, channelId, newAuthData,
+                            allowRefreshRetry = false, catchup = catchup, preferDrm = preferDrm
+                        )
+                    }
+                }
+            }
+
+            if (responseCode in 200..299) {
+                val responseText = connection.inputStream.bufferedReader().use { it.readText() }
+                val json = JSONObject(responseText)
+                
+                var streamUrl = json.optString("result", "")
+                val mpdObj = json.optJSONObject("mpd")
+                // NOTE: `isMpd` is a var — catch-up replays may DEMOTE from DRM DASH to clear HLS
+                // below (mirrors the companion server, which prefers the non-DRM "Fallback" HLS).
+                var isMpd = mpdObj != null && mpdObj.has("result")
+                var licenseUrl = ""
+
+                if (isMpd) {
+                    val mpdUrl = mpdObj!!.optString("result", "")
+                    val hlsFallback = streamUrl
+                    val hlsUsableForReplay = catchup != null && !preferDrm &&
+                        hlsFallback.isNotEmpty() &&
+                        !Regex("paywall", RegexOption.IGNORE_CASE).containsMatchIn(hlsFallback)
+                    if (hlsUsableForReplay) {
+                        // REPLAYS: prefer the CLEAR HLS track. Widevine VOD fails on devices
+                        // without an L1 CDM (emulators, many TV boxes) even though live DRM works,
+                        // and the clear catch-up rendition is entitled for the account — this is
+                        // exactly the "some replays play, others just load" split.
+                        Log.d(TAG, "Catch-up: preferring clear HLS over DRM MPD for channel $channelId")
+                        streamUrl = hlsFallback
+                        isMpd = false
+                    } else {
+                        streamUrl = mpdUrl
+                        licenseUrl = mpdObj.optString("key", "")
+                    }
+                }
+                
+                // Extract cookie from response or headers
+                var cookieStr = ""
+                if (streamUrl.contains("__hdnea__")) {
+                    cookieStr = "__hdnea__" + streamUrl.split("__hdnea__")[1]
+                }
+                
+                // Build Widevine license headers
+                val licenseHeaders = mutableMapOf<String, String>()
+                licenseHeaders["User-Agent"] = "PlayTV/1.0"
+                licenseHeaders["appName"] = APP_NAME
+                licenseHeaders["x-platform"] = OS
+                licenseHeaders["os"] = OS
+                licenseHeaders["devicetype"] = DEVICE_TYPE
+                licenseHeaders["osVersion"] = "13"
+                licenseHeaders["srno"] = UUID.randomUUID().toString()
+                licenseHeaders["channelid"] = channelId
+                licenseHeaders["usergroup"] = "tvYR7NSNn7rymo3F"
+                licenseHeaders["versionCode"] = "389"
+                licenseHeaders["Accept-Encoding"] = "gzip, deflate"
+                licenseHeaders["Content-Type"] = "application/octet-stream"
+                licenseHeaders["Accept"] = "*/*"
+                licenseHeaders["ssoToken"] = authData.ssoToken
+                licenseHeaders["Accesstoken"] = authData.authToken
+                licenseHeaders["userId"] = authData.userId
+                licenseHeaders["uniqueId"] = authData.uniqueId
+                licenseHeaders["crmid"] = authData.crmid
+                licenseHeaders["deviceid"] = authData.deviceId
+                
+                if (cookieStr.isNotEmpty()) {
+                    licenseHeaders["Cookie"] = cookieStr
+                }
+
+                // Build stream headers
+                val streamHeaders = mutableMapOf<String, String>()
+                streamHeaders["User-Agent"] = "plaYtv/7.1.5 (Linux;Android 9) ExoPlayerLib/2.11.7"
+                streamHeaders["ssoToken"] = authData.ssoToken
+                streamHeaders["userId"] = authData.userId
+                streamHeaders["uniqueId"] = authData.uniqueId
+                streamHeaders["crmid"] = authData.crmid
+                streamHeaders["deviceid"] = authData.deviceId
+                streamHeaders["devicetype"] = DEVICE_TYPE
+                streamHeaders["os"] = "B2G"
+                streamHeaders["osversion"] = "2.5"
+                streamHeaders["versioncode"] = "353"
+                if (cookieStr.isNotEmpty()) {
+                    streamHeaders["Cookie"] = cookieStr
+                }
+
+                Result.success(StreamData(
+                    streamUrl = streamUrl,
+                    licenseUrl = licenseUrl,
+                    isMpd = isMpd,
+                    headers = streamHeaders,
+                    licenseHeaders = licenseHeaders
+                ))
+            } else {
+                // Capture Jio's own reason body ("program not available", entitlement errors…)
+                // — it flows into the player's error UI and logcat, which turns a mystery
+                // spinner into an actionable message.
+                val errText = (connection.errorStream ?: connection.inputStream)
+                    ?.bufferedReader()?.use { it.readText() } ?: ""
+                Log.e(TAG, "getStreamUrl failed: $responseCode body=${errText.take(300)}")
+                Result.failure(Exception("HTTP $responseCode ${errText.take(120)}".trim()))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception in getStreamUrl", e)
+            Result.failure(e)
+        }
+    }
+}

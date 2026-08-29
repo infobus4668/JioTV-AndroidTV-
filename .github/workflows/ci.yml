@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  android:
+    name: Android — tests + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: ${{ runner.os }}-gradle-
+      - name: Unit tests + debug build
+        working-directory: android
+        run: ./gradlew :app:testDebugUnitTest :app:assembleDebug
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: jtv-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+  server:
+    name: Server — typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Install
+        working-directory: server
+        run: npm ci
+      - name: Typecheck
+        working-directory: server
+        run: npm run typecheck
+
+  web:
+    name: Web player — typecheck + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: server/web/package-lock.json
+      - name: Install
+        working-directory: server/web
+        run: npm ci
+      - name: Typecheck
+        working-directory: server/web
+        run: npm run typecheck
+      - name: Build
+        working-directory: server/web
+        run: npm run build
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail if any secret / signing file is tracked
+        run: |
+          if git ls-files | grep -Ei '(keystore|\.jks$|\.p12$|\.pfx$|\.pem$|keystore\.properties$|/data/|\.env$)'; then
+            echo "::error::Secret or signing file(s) are tracked in the repo — remove and re-commit."
+            exit 1
+          fi
+          echo "No secrets tracked. OK"
