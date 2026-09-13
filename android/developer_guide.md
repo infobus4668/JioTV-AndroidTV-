@@ -6,8 +6,11 @@ This document provides a comprehensive overview of the application's architectur
 
 The project is structured around the modern Android recommended architecture using Kotlin, Jetpack Compose, and Material 3 for Android TV. The base package is `com.fenyx.jtv`.
 
-- `com.fenyx.jtv.MainActivity`: The main entry point. Sets up the Compose UI surface.
-- `com.fenyx.jtv.Navigation.kt`: Manages screens (Login, Main/Home, Player, Settings) using `androidx.navigation3`.
+- `com.fenyx.jtv.MainActivity`: The main entry point. Sets up the Compose UI surface and the device
+  capability flags (touch / form factor / mouse) that drive the adaptive UX.
+- `com.fenyx.jtv.Navigation.kt`: First-boot setup chooser (SetupScreen / ServerSetupScreen / LoginScreen
+  are switched by the persisted `setupMode`), then `androidx.navigation3` manages the app screens
+  (`Main`, `Search`, `Settings`, `Player`) as a serializable back stack.
 - `com.fenyx.jtv.ui`: Contains all Compose UI screens.
 - `com.fenyx.jtv.data`: Contains data classes, API clients, Settings manager, and Plugin logic.
 
@@ -16,9 +19,11 @@ that generates a Baseline Profile for the launch → browse → play journey). G
 API 33+ device/emulator with `./gradlew :app:generateReleaseBaselineProfile`; the result is embedded in
 release builds via ProfileInstaller and benefits API 24+ devices at runtime.
 
-**Tests:** pure helpers are unit-tested under `app/src/test` — `JioApiClientTokenTest`
-(`extractHdneaToken` / `extractTokenExpiryEpochSec`), `EpgRepositoryTest` (`parseXmltvMillis`), and
-`ChannelLanguageTest` (language-variant collapsing). Run with `./gradlew testDebugUnitTest`.
+**Tests:** pure helpers are unit-tested under `app/src/test` (12 files, 50+ cases) — channel
+filtering/sorting/hidden rules (`ChannelFilterTest`), language-variant collapsing
+(`ChannelLanguageTest`), EPG timestamp parsing and window clipping (`EpgRepositoryTest`,
+`EpgWindowClipTest`, `NativeEpgParserTest`), the catch-up wire format (`PlaybackBodyTest`),
+Akamai-token extraction (`JioApiClientTokenTest`), and more. Run with `./gradlew testDebugUnitTest`.
 
 ## 2. Authentication & Login Flow
 
@@ -62,16 +67,26 @@ To play a channel, the app must convert a channel number into a playable M3U8/MP
 ## 4. UI Components
 
 ### Main Screen (`MainScreen.kt`)
-- Uses `MainViewModel` to manage state.
-- Features a two-pane layout: a category sidebar on the left and a grid/list on the right.
-- **EPG Mode:** If enabled in settings, uses a custom `LazyColumn` with horizontal `LazyRow` timelines for electronic program guides.
+- Uses `MainViewModel` to manage state; list shaping is a single pure pipeline
+  (`ChannelFilter.apply`: hidden exclusion → language filter → category/favorites → sort).
+- Layout: a horizontal **category chip row with live counts** above a full-width adaptive grid
+  (phones clamp tile size so 3 columns always fit), with an optional ★ Favorites rail pinned above.
+- **EPG styles** (Settings): off / **rows** (now+next cards) / **grid** (5-hour scrolling time axis
+  with catch-up ▶ badges and ±24h time-shift).
+- **Hide channels**: long-press / long-OK / MENU on any tile opens the Hide confirm; the manager in
+  **Settings → Hide / Unhide Channels** hides/unhides for every surface with All/Hidden/Visible views.
 - **Auto-Play:** On startup, `Navigation.kt` intercepts the `allChannels` state and if `autoplayLastChannel` is enabled, automatically redirects to `TvPlayerScreen`.
+- **Refresh** (top bar) force-reloads the channel list from the network, bypassing the 24h disk cache.
 
 ### Player Screen (`TvPlayerScreen.kt`)
-- Uses `ExoPlayer` for playback.
-- Has a custom overlay that auto-hides after 5 seconds of inactivity.
-- **Right Arrow:** Opens `Player Settings` (quality, language, view mode).
-- **Left/Right/Up/Down:** Navigate channels seamlessly.
+- Uses `ExoPlayer` for playback with a custom overlay that auto-hides after 5 seconds of inactivity.
+- **Remote:** ↑/↓ (or CH±) zap channels; **←** opens the channel list (with A–Z jump rail and
+  category sidebar); **→** opens the player settings panel (long-press → cycles aspect ratio);
+  digits 0–9 tune by list position; **⏩/⏪** seek ±30 s in a replay or open the programme sheet on
+  live; double-INFO opens the programme sheet; Back peels overlays in order.
+- **Touch/mouse:** tap toggles the overlay, tap outside closes any panel, right-edge swipe = volume,
+  a configurable bottom dock (position or split nav/playback groups) plus an edge ▲▼ zap pill carry
+  every remote action.
 - Continuously saves the `LAST_CHANNEL_ID` to `SettingsManager` for the Autoplay feature.
 
 ## 5. Electronic Program Guide (EPG)
@@ -86,8 +101,14 @@ To play a channel, the app must convert a channel number into a playable M3U8/MP
 ## 6. Settings Management
 
 All persistent data is managed by `SettingsManager.kt` using Jetpack DataStore Preferences.
-- Preferences include: Auth Tokens, EPG URL, Video Quality, Audio Language, Player Resize Mode, Autoplay flags, Favorite Channels, Tunneling, and Playback Buffer (seconds).
-- Stored asynchronously and accessed as Kotlin `Flows`.
+- Preferences include: Auth Tokens (SSO/auth/refresh + device IDs), Server config + access code,
+  EPG URL/style/mode, Video Quality, Audio Language, Player Resize Mode, Autoplay + last channel/
+  category, Favorite Channels, Hidden Channels, Language Filter, A–Z sort, Grid density, On-screen
+  dock buttons/layout/position, Zap-preview + edge zap buttons, Voice Boost, Tunneling, and Playback
+  Buffer (seconds).
+- Stored asynchronously and accessed as Kotlin `Flows`. The DataStore directory is excluded from
+  Android cloud/device backups (`backup_rules.xml` / `data_extraction_rules.xml`) so tokens never
+  leave the device through backups.
 
 ## 7. Playback Resilience & Token Refresh
 
