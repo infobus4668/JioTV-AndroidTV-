@@ -29,6 +29,10 @@ cd server
 docker compose up -d --build
 ```
 
+> Some Docker Compose versions hard-fail when the optional `server/.env` file is absent. If yours
+> does, create an empty one first: `touch .env` (Linux/macOS) or `type nul > .env` (Windows) — the
+> server itself works with no `.env` at all.
+
 Then set everything up **in the browser** (nothing to edit on disk):
 
 1. Open `http://<host>:8080`. On first run either **set an admin password** or choose
@@ -92,6 +96,7 @@ Machine/player endpoints use a **TV access code** (bearer header or `?code=`).
 | POST | `/api/admin/refresh` · `/logout-jio` | cookie | Refresh tokens / sign out Jio |
 | GET/POST/DELETE | `/api/admin/codes…` | cookie | Manage TV access codes |
 | GET/POST | `/api/admin/epg` · `/epg/refresh` | cookie | EPG source (native / XMLTV) |
+| GET/POST | `/api/admin/https` · `/https/regenerate` | cookie | Self-signed HTTPS cert info / regenerate |
 | GET  | `/api/channels` | cookie | Channel list (name, logo, group, language) |
 | GET  | `/api/epg/:id` | cookie | Programme guide for a channel |
 | GET  | `/api/play/:id` | cookie | Manifest URL + DRM flags for the player |
@@ -99,6 +104,7 @@ Machine/player endpoints use a **TV access code** (bearer header or `?code=`).
 | POST | `/api/play/:id/license` | cookie | Widevine license proxy |
 | GET  | `/api/favorites` · `/tv/favorites` | cookie / code | Shared favourites |
 | GET  | `/api/credentials` | **code** | **TVs pull the shared AuthData here** |
+| POST | `/api/refresh` | **code** | Force a central Jio token refresh |
 | GET  | `/playlist.m3u` | **code** | M3U playlist for external players |
 | GET  | `/live/:id.m3u8` | **code** | Resolve + proxy a channel (HLS, quality/catch-up) |
 | GET  | `/seg` | **code** | Segment/key proxy for external players |
