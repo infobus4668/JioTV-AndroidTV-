@@ -12,8 +12,10 @@ import androidx.tv.material3.SurfaceDefaults
 import com.fenyx.jtv.theme.DeviceForm
 import com.fenyx.jtv.theme.JioTVGoTVTheme
 import com.fenyx.jtv.theme.LocalDeviceForm
+import com.fenyx.jtv.theme.LocalHasMouse
 import com.fenyx.jtv.theme.LocalIsTouch
 import com.fenyx.jtv.theme.deviceForm
+import com.fenyx.jtv.theme.hasMouseDevice
 import com.fenyx.jtv.theme.isTouchDevice
 
 class MainActivity : ComponentActivity() {
@@ -31,10 +33,15 @@ class MainActivity : ComponentActivity() {
         // was unnecessary and awkward to dismiss with a TV remote.
         val isTouch = isTouchDevice()
         val form = deviceForm()
+        // Mouse-style pointer (TV emulator, PC emulators like BlueStacks, air-mouse boxes): unlocks
+        // hover/press-to-focus + the on-screen dock + video click gestures. Independent of the
+        // touch flag — a touch-mode PC emulator whose mouse is the only pointer still needs it.
+        val hasMouse = hasMouseDevice()
         setContent {
             CompositionLocalProvider(
                 LocalIsTouch provides isTouch,
-                LocalDeviceForm provides form
+                LocalDeviceForm provides form,
+                LocalHasMouse provides hasMouse
             ) {
                 JioTVGoTVTheme {
                     Surface(

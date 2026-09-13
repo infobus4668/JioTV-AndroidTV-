@@ -6,12 +6,14 @@ import android.speech.SpeechRecognizer
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -25,9 +27,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusRestorer
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -41,6 +46,7 @@ import com.fenyx.jtv.data.SettingsManager
 import com.fenyx.jtv.theme.*
 import kotlinx.coroutines.launch
 import com.fenyx.jtv.ui.main.ChannelCard
+import com.fenyx.jtv.ui.main.HideChannelConfirmDialog
 import com.fenyx.jtv.ui.main.MainViewModel
 
 /**
@@ -61,18 +67,33 @@ fun SearchScreen(
     val settingsManager = remember { SettingsManager(context) }
     val scope = rememberCoroutineScope()
     val allChannels by viewModel.displayChannels.collectAsState()
+    val hiddenChannels by viewModel.hiddenChannels.collectAsState()
     val indexMap = remember(allChannels) { allChannels.withIndex().associate { (i, c) -> c.id to i } }
     val recentSearches by settingsManager.recentSearchesFlow.collectAsState(initial = emptyList())
 
     var query by remember { mutableStateOf("") }
-    val results = remember(query, allChannels) {
+    // Focus ring state for the search field (TV D-pad cue).
+    var searchFieldFocused by remember { mutableStateOf(false) }
+    // Long-press hide target (same confirm flow as Home).
+    var hideTarget by remember { mutableStateOf<com.fenyx.jtv.data.Channel?>(null) }
+    // Post-hide focus restore: the matching result tile focuses itself (see ChannelCard).
+    // Auto-expires so a stale id can never yank focus later.
+    var pendingFocusId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(pendingFocusId) {
+        if (pendingFocusId != null) {
+            kotlinx.coroutines.delay(2000)
+            pendingFocusId = null
+        }
+    }
+    val results = remember(query, allChannels, hiddenChannels) {
         val q = query.trim()
         if (q.isEmpty()) emptyList()
         else allChannels.filter { ch ->
-            // Match the representative's name, or any collapsed language variant's name, so a hidden
-            // feed like "Colors Kannada" is still findable via its "Colors" tile.
-            ch.name.contains(q, ignoreCase = true) ||
-                viewModel.variantsFor(ch.id).any { it.channel.name.contains(q, ignoreCase = true) }
+            ch.id !in hiddenChannels &&
+                // Match the representative's name, or any collapsed language variant's name, so a hidden
+                // feed like "Colors Kannada" is still findable via its "Colors" tile.
+                (ch.name.contains(q, ignoreCase = true) ||
+                    viewModel.variantsFor(ch.id).any { it.channel.name.contains(q, ignoreCase = true) })
         }.take(150)
     }
 
@@ -98,10 +119,16 @@ fun SearchScreen(
 
     val fieldFocus = remember { FocusRequester() }
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    val isTouch = LocalIsTouch.current
     LaunchedEffect(Unit) {
         runCatching { fieldFocus.requestFocus() }
-        kotlinx.coroutines.delay(50)
-        keyboard?.show() // TV: focus alone doesn't open the on-screen keyboard
+        // Auto-opening the IME is a TV behaviour (focus alone doesn't open the leanback
+        // keyboard). On phones it instantly covered the recent-chips area; the keyboard
+        // appears when the user taps the field instead.
+        if (!isTouch) {
+            kotlinx.coroutines.delay(50)
+            keyboard?.show()
+        }
     }
 
     Column(
@@ -120,6 +147,15 @@ fun SearchScreen(
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(10.dp))
                 .background(TvDarkSurface)
+                // D-pad cue: the field is focusable but had no focus ring — the cursor was the
+                // only signal that the field held focus on TVs.
+                .border(
+                    2.dp,
+                    // Focus ring is a D-pad cue: on touch the field was outlined at screen open
+                    // even though nothing navigates to it by focus there.
+                    if (searchFieldFocused && !isTouch) TvFocusBorder else Color.Transparent,
+                    RoundedCornerShape(10.dp)
+                )
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -135,26 +171,38 @@ fun SearchScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .focusRequester(fieldFocus)
-                        .focusable(),
+                        .focusable()
+                        .onFocusChanged { searchFieldFocused = it.isFocused || it.hasFocus },
                     textStyle = TextStyle(color = TvOnSurface, fontSize = 18.sp),
                     cursorBrush = SolidColor(TvPrimary),
-                    singleLine = true
+                    singleLine = true,
+                    // Enter = commit on the IME; no autocorrect mangling channel names.
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        imeAction = androidx.compose.ui.text.input.ImeAction.Search,
+                        autoCorrectEnabled = false,
+                        capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Words
+                    )
                 )
             }
             if (query.isNotEmpty()) {
                 Surface(
                     onClick = { query = "" },
+                    // 48dp minimum tap target (was 40dp — thumb-hostile on phones).
+                    modifier = Modifier.size(48.dp),
                     shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
                     scale = ClickableSurfaceDefaults.scale(focusedScale = 1.08f),
                     colors = ClickableSurfaceDefaults.colors(containerColor = Color.Transparent)
                 ) {
-                    Icon(Icons.Default.Close, contentDescription = "Clear", tint = TvOnSurfaceVariant, modifier = Modifier.padding(4.dp).size(18.dp))
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.Close, contentDescription = "Clear", tint = TvOnSurfaceVariant, modifier = Modifier.size(18.dp))
+                    }
                 }
                 Spacer(modifier = Modifier.width(6.dp))
             }
             if (voiceAvailable) {
                 Surface(
                     onClick = { launchVoice() },
+                    modifier = Modifier.heightIn(min = 48.dp),
                     shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
                     scale = ClickableSurfaceDefaults.scale(focusedScale = 1.08f),
                     colors = ClickableSurfaceDefaults.colors(
@@ -170,7 +218,11 @@ fun SearchScreen(
                 ) {
                     Text(
                         "🎙",
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp),
+                        modifier = Modifier
+                            .defaultMinSize(minWidth = 40.dp, minHeight = 40.dp)
+                            .wrapContentSize(Alignment.Center)
+                            // Spoken label: TalkBack announced the raw emoji glyph before.
+                            .semantics { contentDescription = "Voice search" },
                         fontSize = 18.sp,
                         color = TvOnSurface
                     )
@@ -209,7 +261,12 @@ fun SearchScreen(
                                     "Clear",
                                     color = TvOnSurfaceVariant,
                                     style = MaterialTheme.typography.labelSmall,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                                    // 48dp-class tap area (the old 5dp vertical padding made the
+                                    // chip ~27dp tall — well under the touch minimum).
+                                    modifier = Modifier
+                                        .padding(horizontal = 12.dp)
+                                        .defaultMinSize(minHeight = 48.dp)
+                                        .wrapContentHeight(Alignment.CenterVertically)
                                 )
                             }
                         }
@@ -254,6 +311,16 @@ fun SearchScreen(
                 }
             }
             else -> {
+                Column(modifier = Modifier.fillMaxSize()) {
+                // Truncation notice: the list silently capped at 150 and users couldn't tell.
+                if (results.size >= 150) {
+                    Text(
+                        "Showing first 150 matches — refine your search",
+                        color = TvOnSurfaceVariant,
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
+                }
                 LazyVerticalGrid(
                     // Phone clamp (3 columns) — matches the home grid so search results and the
                     // home grid show tiles at the same size on narrow screens.
@@ -272,11 +339,30 @@ fun SearchScreen(
                                 onChannelClick(indexMap[channel.id] ?: 0, null)
                             },
                             number = channel.channelNumber.takeIf { it > 0 }
-                                ?: (indexMap[channel.id]?.plus(1) ?: 0)
+                                ?: (indexMap[channel.id]?.plus(1) ?: 0),
+                            onHideRequest = { hideTarget = it },
+                            hideFocusTarget = pendingFocusId,
+                            onHideFocusConsumed = { pendingFocusId = null }
                         )
                     }
                 }
+                }
             }
         }
+    }
+
+    // Long-press Hide confirm.
+    hideTarget?.let { target ->
+        HideChannelConfirmDialog(
+            channelName = target.name,
+            onHide = {
+                val ids = results.map { it.id }
+                val i = ids.indexOf(target.id)
+                pendingFocusId = ids.getOrNull(i + 1) ?: ids.getOrNull((i - 1).coerceAtLeast(0))
+                viewModel.toggleHiddenChannel(target.id)
+                hideTarget = null
+            },
+            onDismiss = { hideTarget = null }
+        )
     }
 }

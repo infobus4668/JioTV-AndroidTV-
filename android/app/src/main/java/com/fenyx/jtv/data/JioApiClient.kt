@@ -15,7 +15,7 @@ object JioApiClient {
     private const val TAG = "JioApiClient"
 
     // Default Headers
-    private const val USER_AGENT = "okhttp/4.2.2"
+    private const val USER_AGENT = "okhttp/4.12.0"
     private const val APP_NAME = "RJIL_JioTV"
     private const val OS = "android"
     private const val DEVICE_TYPE = "phone"
@@ -54,6 +54,13 @@ object JioApiClient {
         val showtime: String
     )
 
+    private fun readResponseBody(connection: HttpURLConnection, isError: Boolean = false): String {
+        val isGzip = "gzip".equals(connection.contentEncoding, ignoreCase = true)
+        val rawStream = if (isError) (connection.errorStream ?: connection.inputStream) else connection.inputStream
+        val stream = if (isGzip && rawStream != null) java.util.zip.GZIPInputStream(rawStream) else rawStream
+        return stream?.bufferedReader()?.use { it.readText() } ?: ""
+    }
+
     suspend fun sendOTP(mobile: String): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             val formattedMobile = if (!mobile.startsWith("+91")) "+91$mobile" else mobile
@@ -80,11 +87,10 @@ object JioApiClient {
             writer.close()
 
             val responseCode = connection.responseCode
-            if (responseCode == 204) {
+            if (responseCode in 200..299) {
                 Result.success(Unit)
             } else {
-                val errorStream = connection.errorStream ?: connection.inputStream
-                val errorText = errorStream.bufferedReader().use { it.readText() }
+                val errorText = readResponseBody(connection, isError = true)
                 Log.e(TAG, "sendOTP failed: $responseCode - $errorText")
                 Result.failure(Exception("Failed to send OTP: $responseCode"))
             }
@@ -130,7 +136,7 @@ object JioApiClient {
 
             val responseCode = connection.responseCode
             if (responseCode in 200..299) {
-                val responseText = connection.inputStream.bufferedReader().use { it.readText() }
+                val responseText = readResponseBody(connection, isError = false)
                 val json = JSONObject(responseText)
                 
                 if (json.has("ssoToken")) {
@@ -149,8 +155,7 @@ object JioApiClient {
                     Result.failure(Exception(json.optString("message", "Unknown error in OTP verification")))
                 }
             } else {
-                val errorStream = connection.errorStream ?: connection.inputStream
-                val errorText = errorStream.bufferedReader().use { it.readText() }
+                val errorText = readResponseBody(connection, isError = true)
                 Log.e(TAG, "verifyOTP failed: $responseCode - $errorText")
                 Result.failure(Exception("Failed to verify OTP: $responseCode"))
             }
@@ -182,7 +187,8 @@ object JioApiClient {
             connection.setRequestProperty("devicetype", DEVICE_TYPE)
             connection.setRequestProperty("deviceId", authData.deviceId)
             connection.setRequestProperty("uniqueId", authData.uniqueId)
-            connection.setRequestProperty("versionCode", "389")
+            connection.setRequestProperty("versionCode", "422")
+            connection.setRequestProperty("user-agent", USER_AGENT)
             connection.setRequestProperty("Content-Type", "application/json")
             connection.doOutput = true
 
@@ -195,7 +201,7 @@ object JioApiClient {
             OutputStreamWriter(connection.outputStream).use { it.write(body); it.flush() }
 
             if (connection.responseCode in 200..299) {
-                val responseText = connection.inputStream.bufferedReader().use { it.readText() }
+                val responseText = readResponseBody(connection, isError = false)
                 val json = JSONObject(responseText)
                 // The refresh service returns a fresh authToken (and sometimes a new ssoToken /
                 // refreshToken). Update whichever are present, keeping the rest.
@@ -214,7 +220,7 @@ object JioApiClient {
                     return@withContext Result.success(true)
                 }
             }
-            val errText = (connection.errorStream ?: connection.inputStream)?.bufferedReader()?.use { it.readText() } ?: ""
+            val errText = readResponseBody(connection, isError = true)
             Log.e(TAG, "Refresh failed ${connection.responseCode}: $errText")
             Result.failure(Exception("Refresh failed with code ${connection.responseCode}"))
         } catch (e: Exception) {
@@ -377,6 +383,8 @@ object JioApiClient {
                                     var logoUrl = ""
                                     var catId = ""
                                     var langId = -1
+                                    var isDrmParsed = false
+                                    var isDrmValue = false
                                     while (reader.hasNext()) {
                                         when (reader.nextName()) {
                                             "channel_id" -> channelId = try { reader.nextInt() } catch(e: Exception) { reader.nextString().toIntOrNull() ?: 0 }
@@ -384,6 +392,8 @@ object JioApiClient {
                                             "logoUrl" -> logoUrl = reader.nextString()
                                             "channelCategoryId" -> catId = try { reader.nextString() } catch(e: Exception) { reader.nextInt().toString() }
                                             "channelLanguageId" -> langId = try { reader.nextInt() } catch(e: Exception) { reader.nextString().toIntOrNull() ?: -1 }
+                                            "isDrm" -> { isDrmParsed = true; isDrmValue = try { reader.nextBoolean() } catch(e: Exception) { reader.nextString().toBoolean() } }
+                                            "streamType" -> { val st = try { reader.nextString() } catch(e: Exception) { "" }; if (st.equals("mpd", ignoreCase = true)) { isDrmParsed = true; isDrmValue = true } }
                                             else -> reader.skipValue()
                                         }
                                     }
@@ -394,7 +404,9 @@ object JioApiClient {
                                             name = channelName.ifEmpty { "Unknown" },
                                             logoUrl = "https://jiotvimages.cdn.jio.com/dare_images/images/$logoUrl",
                                             group = categoryMap[catId] ?: "Other",
-                                            isDrm = true,
+                                            // Dynamic DRM when Jio sends it; default true preserves old
+                                            // behaviour for entries without the flag (most live lists).
+                                            isDrm = if (isDrmParsed) isDrmValue else true,
                                             channelNumber = channelId,
                                             streamUrl = "",
                                             language = JioLanguages.resolve(langId.takeIf { it > 0 }, channelName, languageMap),
@@ -416,8 +428,8 @@ object JioApiClient {
             }
 
             // Fetch v1.4 (Sony/Zee) and v3.1 (Star/Disney)
-            parseChannels("https://jiotvapi.cdn.jio.com/apis/v1.4/getMobileChannelList/get/?langId=6&devicetype=phone&os=android&usertype=JIO&version=396")
-            parseChannels("https://jiotvapi.cdn.jio.com/apis/v3.1/getMobileChannelList/get/?langId=6&os=android&devicetype=phone&usertype=JIO&version=389")
+            parseChannels("https://jiotvapi.cdn.jio.com/apis/v1.4/getMobileChannelList/get/?langId=6&devicetype=phone&os=android&usertype=JIO&version=422")
+            parseChannels("https://jiotvapi.cdn.jio.com/apis/v3.1/getMobileChannelList/get/?langId=6&os=android&devicetype=phone&usertype=JIO&version=422")
 
             if (finalChannelsMap.isEmpty()) {
                 // Network produced nothing — fall back to whatever we have on disk (even if stale)
@@ -535,9 +547,8 @@ object JioApiClient {
             connection.setRequestProperty("Subscriberid", authData.crmid)
             connection.setRequestProperty("analyticsId", authData.deviceId)
             connection.setRequestProperty("Lbcookie", "1")
-            connection.setRequestProperty("Versioncode", "389")
-            connection.setRequestProperty("Accept-Encoding", "gzip, deflate, br")
-            connection.setRequestProperty("user-agent", "okhttp/4.2.2")
+            connection.setRequestProperty("Versioncode", "422")
+            connection.setRequestProperty("user-agent", USER_AGENT)
             connection.setRequestProperty("Connection", "keep-alive")
             connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
             connection.doOutput = true
@@ -570,7 +581,7 @@ object JioApiClient {
             }
 
             if (responseCode in 200..299) {
-                val responseText = connection.inputStream.bufferedReader().use { it.readText() }
+                val responseText = readResponseBody(connection, isError = false)
                 val json = JSONObject(responseText)
                 
                 var streamUrl = json.optString("result", "")
@@ -617,7 +628,7 @@ object JioApiClient {
                 licenseHeaders["srno"] = UUID.randomUUID().toString()
                 licenseHeaders["channelid"] = channelId
                 licenseHeaders["usergroup"] = "tvYR7NSNn7rymo3F"
-                licenseHeaders["versionCode"] = "389"
+                licenseHeaders["versionCode"] = "422"
                 licenseHeaders["Accept-Encoding"] = "gzip, deflate"
                 licenseHeaders["Content-Type"] = "application/octet-stream"
                 licenseHeaders["Accept"] = "*/*"
@@ -634,7 +645,7 @@ object JioApiClient {
 
                 // Build stream headers
                 val streamHeaders = mutableMapOf<String, String>()
-                streamHeaders["User-Agent"] = "plaYtv/7.1.5 (Linux;Android 9) ExoPlayerLib/2.11.7"
+                streamHeaders["User-Agent"] = "plaYtv/7.1.8 (Linux;Android 8.1.0) ExoPlayerLib/2.11.7"
                 streamHeaders["ssoToken"] = authData.ssoToken
                 streamHeaders["userId"] = authData.userId
                 streamHeaders["uniqueId"] = authData.uniqueId

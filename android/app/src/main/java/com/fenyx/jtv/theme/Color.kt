@@ -28,6 +28,12 @@ val TvError = Color(0xFFF85149)
 val TvLiveRed = Color(0xFFFF4444)
 val TvOnlineGreen = Color(0xFF3FB950)
 
+// Accent for replay/catch-up affordances (▶ badges, replay borders, "-2h" shift keys)
+val TvAmber = Color(0xFFFFB300)
+
+// Accent for favourite/star affordances
+val TvGold = Color(0xFFFFD700)
+
 // Focus/selection
 val TvFocusBorder = Color(0xFF9C27B0)
 val TvSelectedGlow = Color(0x409C27B0)

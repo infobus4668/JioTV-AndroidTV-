@@ -47,6 +47,8 @@ import androidx.tv.material3.Icon
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -129,6 +131,14 @@ fun TvPlayerScreen(
     val scope = rememberCoroutineScope()
     val focusRequester = remember { FocusRequester() }
     val isTouch = com.fenyx.jtv.theme.LocalIsTouch.current
+    // Mouse-style pointer (TV emulator / air-mouse boxes): unlocks the on-screen dock and video
+    // click gestures on top of the pure D-pad UX.
+    val hasMouse = com.fenyx.jtv.theme.LocalHasMouse.current
+    val pointerUi = isTouch || hasMouse
+    // Light confirmation ticks for touch interactions (dock keys, zap keys, numpad). No-op on
+    // TVs without a vibrator; a bare tap otherwise gives zero acknowledgment on a glass screen.
+    val haptics = LocalHapticFeedback.current
+    fun tick() { runCatching { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) } }
 
     // ─── Orientation: follow the device (phones) ───
     // The player no longer forces landscape: it opens in whatever orientation the system hands it
@@ -175,6 +185,10 @@ fun TvPlayerScreen(
     var catchupProg by remember { mutableStateOf(initialCatchup) }
     var catchupChId by remember { mutableStateOf<String?>(initialCatchupChannelId) }
     val catchup = catchupProg?.takeIf { catchupChId != null && catchupChId == currentChannel?.id }
+    // Live view of the replay state for the error listener below: that listener is registered
+    // once per player instance (DisposableEffect(exoPlayer)) and would otherwise keep seeing
+    // the composition-time `catchup` value from when it was registered.
+    val catchupState = rememberUpdatedState(catchup)
     // True when the ACTIVE replay resolved to the DRM DASH track (no clear HLS offered) — lets
     // failure messages say "your device can't decode this" instead of a generic retry line.
     var replayWasDrm by remember { mutableStateOf(false) }
@@ -210,6 +224,7 @@ fun TvPlayerScreen(
 
     val settingsManager = remember { SettingsManager(context) }
     val favoriteChannels by settingsManager.favoriteChannelsFlow.collectAsState(initial = emptySet())
+    val hiddenChannels by settingsManager.hiddenChannelsFlow.collectAsState(initial = emptySet())
     val playerSetupMode by settingsManager.setupModeFlow.collectAsState(initial = null)
     // Optional "Zap preview": ↑/↓ opens a preview strip instead of zapping instantly.
     val zapPreviewEnabled by settingsManager.zapPreviewFlow.collectAsState(initial = false)
@@ -219,12 +234,15 @@ fun TvPlayerScreen(
     val zapEdgeButtons by settingsManager.zapEdgeButtonsFlow.collectAsState(initial = true)
     // "Refresh Login" (server mode) state shown in the right-side overlay.
     var refreshingCreds by remember { mutableStateOf(false) }
+    // Declared before the auto-hide effect below (which keys on it).
+    var showStats by remember { mutableStateOf(false) }
 
     // Auto-hide overlay. Keyed on the panels too: opening a panel used to cancel the pending hide
     // and closing it left the banner/dock on screen FOREVER (the timer never re-armed). Now the
     // countdown simply restarts on any panel toggle, so closing a panel by tapping outside lands
     // on a clean video.
-    LaunchedEffect(showOverlay, showChannelList, showCategoryList, showSettingsOverlay) {
+    LaunchedEffect(showOverlay, showChannelList, showCategoryList, showSettingsOverlay,
+        showProgrammes, showStats, showZapStrip) {
         if (showOverlay) {
             delay(5000)
             showOverlay = false
@@ -290,8 +308,8 @@ fun TvPlayerScreen(
     var playbackError by remember { mutableStateOf<String?>(null) }
 
     // ─── Diagnostics overlay (long-press INFO) ───
-    // Declared BEFORE the track listener below, which writes the selected-format lines.
-    var showStats by remember { mutableStateOf(false) }
+    // (showStats itself is declared near the top, before the overlay auto-hide effect keys on it.)
+    // The stat lines are declared BEFORE the track listener below, which writes them.
     var statVideo by remember { mutableStateOf<String?>(null) }
     var statAudio by remember { mutableStateOf<String?>(null) }
     var statsTick by remember { mutableIntStateOf(0) }
@@ -305,6 +323,11 @@ fun TvPlayerScreen(
     // so a long session can recover indefinitely instead of dying after a fixed number of errors.
     val retryCount = remember { mutableIntStateOf(0) }
     var streamRefreshTrigger by remember { mutableIntStateOf(0) }
+    // Load generation: bumped on every (re)load in the media-load effect below. Delayed work
+    // (token pre-refresh publish, backoff retries) snapshots it and no-ops when the user has
+    // since zapped — otherwise a stale fetch for the OLD channel contaminates the NEW stream
+    // (wrong __hdnea__ token → 403s) or needlessly reloads it mid-start.
+    val loadGen = remember { mutableIntStateOf(0) }
     // Bumping this re-attaches the audio effect (see the buffering watchdog + AudioEnhancer) to kick a
     // stalled AudioTrack alive without touching the stream.
     var audioKick by remember { mutableIntStateOf(0) }
@@ -545,20 +568,23 @@ fun TvPlayerScreen(
                 if (retryCount.intValue < 5) {
                     // Replay escalation: after the first HLS failure, ask for the DRM DASH track
                     // on subsequent attempts (dead clear-urlset fallback, per-channel).
-                    if (catchup != null && retryCount.intValue >= 1) replayDrmRetry = true
+                    if (catchupState.value != null && retryCount.intValue >= 1) replayDrmRetry = true
                     retryCount.intValue++
                     // Small backoff so a flapping CDN doesn't get hammered. Driven via the
                     // streamRefreshTrigger LaunchedEffect which re-fetches the stream URL.
+                    // Guarded by the load generation: a zap during the backoff must not
+                    // reload the NEW channel mid-start.
+                    val gen = loadGen.intValue
                     val backoffMs = 800L * retryCount.intValue
                     scope.launch {
                         delay(backoffMs)
-                        streamRefreshTrigger++
+                        if (gen == loadGen.intValue) streamRefreshTrigger++
                     }
                 } else {
                     // Auto-recovery exhausted: stop the spinner and show an actionable message
                     // instead of an indefinite black screen.
                     isBuffering = false
-                    playbackError = if (catchup != null && replayWasDrm) {
+                    playbackError = if (catchupState.value != null && replayWasDrm) {
                         "This replay is DRM-protected and this device can't decode it."
                     } else {
                         "Playback stopped. Press OK to retry."
@@ -596,6 +622,9 @@ fun TvPlayerScreen(
             tokenHolder.set("")
             streamHeadersHolder.set(emptyMap())
             licenseHeadersHolder.set(emptyMap())
+            // New load generation: any in-flight delayed work (token pre-refresh, backoff
+            // retries) from the previous load now no-ops instead of contaminating this one.
+            loadGen.intValue++
             
             val authData = settingsManager.authDataFlow.first()
             
@@ -723,8 +752,11 @@ fun TvPlayerScreen(
                     }
                 } else {
                     retryCount.intValue++
+                    val gen = loadGen.intValue
                     delay(800L * retryCount.intValue)
-                    streamRefreshTrigger++
+                    // The user may have zapped while we waited — only re-trigger when this
+                    // load is still the current one, otherwise the new channel reloads mid-start.
+                    if (gen == loadGen.intValue) streamRefreshTrigger++
                 }
             }
         }
@@ -793,13 +825,19 @@ fun TvPlayerScreen(
                          else 60_000L
             delay(waitMs)
 
+            // The user may have zapped (or started a replay) while we waited or while the
+            // fetch below runs: only publish when this loop's load is still current, so an
+            // old channel's token can never overwrite the new stream's credentials.
+            val gen = loadGen.intValue
             val authData = settingsManager.authDataFlow.first() ?: continue
             val res = com.fenyx.jtv.data.JioApiClient.getStreamUrl(
                 context, ch.channelNumber.toString(), authData
             )
             if (res.isSuccess) {
                 val newToken = com.fenyx.jtv.data.JioApiClient.extractHdneaToken(res.getOrNull()!!.streamUrl)
-                if (newToken.isNotEmpty()) {
+                // gen is the operative guard (this run's `playingChannel`/`ch` are fixed at
+                // launch; only the shared generation tells us a zap/replay superseded us).
+                if (newToken.isNotEmpty() && gen == loadGen.intValue) {
                     tokenHolder.set(newToken)
                     android.util.Log.d("TvPlayer", "Token refreshed for channel ${ch.channelNumber}")
                 }
@@ -833,7 +871,7 @@ fun TvPlayerScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val userPausedState = rememberUpdatedState(userPaused)
     val inPip = remember { mutableStateOf(false) }
-    val pipSupported = isTouch && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O
+    val pipSupported = pointerUi && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O
     DisposableEffect(lifecycleOwner, exoPlayer, pipSupported) {
         val act = playerActivity
         val observer = LifecycleEventObserver { _, event ->
@@ -1256,6 +1294,10 @@ fun TvPlayerScreen(
                         else -> null
                     }
                     if (digit != null) {
+                        // Digits are channel entry for the watching view only — typing while the
+                        // channel list or settings sheet is open used to spawn the numeric overlay
+                        // on top of the panel / change the channel underneath it.
+                        if (!normalWatching) return@onPreviewKeyEvent false
                         if (!(numericBuffer.isEmpty() && digit == 0) && numericBuffer.length < 4) {
                             numericBuffer += digit.toString()
                             showNumericOverlay = true
@@ -1285,21 +1327,31 @@ fun TvPlayerScreen(
 
                     when (keyEvent.key) {
                         Key.ChannelUp -> {
-                            if (currentChannels.isNotEmpty() && !showSettingsOverlay) {
+                            // Zapping must not fire underneath an open panel (channel list,
+                            // programmes sheet…) — it changed the channel invisibly while the
+                            // panel hid the banner. The zap strip is the one exception: CH±
+                            // closes it and zaps by design.
+                            if (currentChannels.isNotEmpty() && (normalWatching || showZapStrip)) {
+                                // Direct CH± zap also closes the preview strip — leaving it open
+                                // with a stale stripIndex made the next OK tune a surprise channel.
+                                showZapStrip = false
                                 currentIndex = (currentIndex + 1) % currentChannels.size
                                 showOverlay = true
                             }
                             true
                         }
                         Key.ChannelDown -> {
-                            if (currentChannels.isNotEmpty() && !showSettingsOverlay) {
+                            if (currentChannels.isNotEmpty() && (normalWatching || showZapStrip)) {
+                                showZapStrip = false
                                 currentIndex = (currentIndex - 1 + currentChannels.size) % currentChannels.size
                                 showOverlay = true
                             }
                             true
                         }
                         Key.DirectionUp -> {
-                            if (showSettingsOverlay || showProgrammes) {
+                            if (showSettingsOverlay || showProgrammes || playbackError != null) {
+                                // Focus-based panels (settings rows, programme sheet, error
+                                // buttons) handle their own focus traversal — don't zap.
                                 false
                             } else if (showZapStrip) {
                                 if (currentChannels.isNotEmpty()) {
@@ -1332,7 +1384,7 @@ fun TvPlayerScreen(
                             }
                         }
                         Key.DirectionDown -> {
-                            if (showSettingsOverlay || showProgrammes) {
+                            if (showSettingsOverlay || showProgrammes || playbackError != null) {
                                 false
                             } else if (showZapStrip) {
                                 if (currentChannels.isNotEmpty()) {
@@ -1417,6 +1469,12 @@ fun TvPlayerScreen(
                                     showCategoryList = false
                                 }
                                 true
+                            } else if (showSettingsOverlay || showProgrammes) {
+                                // Those panels hold real focusable rows (settings toggles, replay
+                                // programmes). Returning false lets the FOCUSED row take the OK
+                                // press — intercepting it here left every row browse-only on a
+                                // remote: arrows moved focus but OK just toggled the banner.
+                                false
                             } else if (playbackError != null) {
                                 // Let the focused Retry / Other-channels button take the OK press —
                                 // the Retry button auto-focuses when the error appears, so a plain
@@ -1426,12 +1484,6 @@ fun TvPlayerScreen(
                                 showOverlay = !showOverlay
                                 true
                             }
-                        }
-                        Key.Back, Key.Escape -> {
-                            if (showCategoryList) { showCategoryList = false; true }
-                            else if (showChannelList) { showChannelList = false; true }
-                            else if (showOverlay) { showOverlay = false; true }
-                            else { onBack(); true }
                         }
                         // ── Standard TV media remote keys ──
                         // Play/Pause toggle from the dedicated remote key.
@@ -1453,15 +1505,49 @@ fun TvPlayerScreen(
                         Key.MediaNext -> {
                             if (userPaused) {
                                 jumpToLive()
-                            } else if (currentChannels.isNotEmpty() && !showSettingsOverlay) {
+                            } else if (currentChannels.isNotEmpty() && (normalWatching || showZapStrip)) {
+                                showZapStrip = false
                                 currentIndex = (currentIndex + 1) % currentChannels.size
                                 showOverlay = true
                             }
                             true
                         }
                         Key.MediaPrevious -> {
-                            if (currentChannels.isNotEmpty() && !showSettingsOverlay) {
+                            if (currentChannels.isNotEmpty() && (normalWatching || showZapStrip)) {
+                                showZapStrip = false
                                 currentIndex = (currentIndex - 1 + currentChannels.size) % currentChannels.size
+                                showOverlay = true
+                            }
+                            true
+                        }
+                        // Dedicated ⏩/⏪ keys (present on most TV remotes) were dead before.
+                        // During a catch-up replay they seek ±30s (and surface the scrubber);
+                        // on live, the only meaningful "skip" is catch-up, so they open the
+                        // programme sheet where finished shows can be replayed.
+                        Key.MediaFastForward -> {
+                            if (catchup != null) {
+                                showCatchupBar = true
+                                val dur = exoPlayer.duration
+                                exoPlayer.seekTo(
+                                    (exoPlayer.currentPosition + 30_000)
+                                        .coerceIn(0L, if (dur > 0) dur else Long.MAX_VALUE)
+                                )
+                            } else {
+                                showProgrammes = true
+                                showOverlay = true
+                            }
+                            true
+                        }
+                        Key.MediaRewind -> {
+                            if (catchup != null) {
+                                showCatchupBar = true
+                                val dur = exoPlayer.duration
+                                exoPlayer.seekTo(
+                                    (exoPlayer.currentPosition - 30_000)
+                                        .coerceIn(0L, if (dur > 0) dur else Long.MAX_VALUE)
+                                )
+                            } else {
+                                showProgrammes = true
                                 showOverlay = true
                             }
                             true
@@ -1511,7 +1597,7 @@ fun TvPlayerScreen(
             modifier = Modifier.fillMaxSize()
         )
 
-        if (isTouch) {
+        if (pointerUi) {
             val tapError by rememberUpdatedState(playbackError)
             val tapBarOpen by rememberUpdatedState(showCatchupBar)
             // Panels read via rememberUpdatedState: the gesture lambda is stale otherwise.
@@ -1522,12 +1608,24 @@ fun TvPlayerScreen(
             val tapChannelsOpen by rememberUpdatedState(showChannelList)
             val tapNumericOpen by rememberUpdatedState(showNumericOverlay)
             val tapZapStripOpen by rememberUpdatedState(showZapStrip)
+            // Double-tap: ±10s while in a catch-up replay, back to LIVE edge when live. Standard
+            // player gesture — seek without opening the replay bar.
+            var currentTapTime by remember { mutableStateOf(0L) }
+            var currentTapX by remember { mutableStateOf(0f) }
+            fun seekByGlobal(deltaMs: Long) {
+                val dur = exoPlayer.duration
+                val target = (exoPlayer.currentPosition + deltaMs).coerceIn(0L, if (dur > 0) dur else Long.MAX_VALUE)
+                exoPlayer.seekTo(target)
+            }
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .pointerInput(Unit) {
                         detectTapGestures(
-                            onTap = {
+                            onTap = { pos ->
+                                android.util.Log.d("JTV-INPUT", "player tap at $pos")
+                                // Re-claim root focus so D-pad/OK keeps working after mouse use.
+                                runCatching { focusRequester.requestFocus() }
                                 when {
                                     tapError != null -> {} // error overlay owns this tap (its buttons)
                                     tapBarOpen -> showCatchupBar = false
@@ -1541,24 +1639,55 @@ fun TvPlayerScreen(
                                     tapChannelsOpen -> { letterActive = false; showChannelList = false }
                                     tapNumericOpen -> { showNumericOverlay = false; numericBuffer = "" }
                                     tapZapStripOpen -> showZapStrip = false
-                                    else -> showOverlay = !showOverlay
+                                    else -> {
+                                        // Double-tap zones: screen edges seek ±10s in a replay;
+                                        // live playback has nothing to seek, so a double-tap just
+                                        // toggles the overlay like a single tap.
+                                        val isDouble = currentTapTime != 0L &&
+                                            System.currentTimeMillis() - currentTapTime < 300 &&
+                                            kotlin.math.abs(pos.x - currentTapX) < size.width * 0.25f
+                                        val inLeftZone = pos.x < size.width * 0.3f
+                                        val inRightZone = pos.x > size.width * 0.7f
+                                        when {
+                                            catchupState.value != null && isDouble && inLeftZone -> {
+                                                seekByGlobal(-10_000); tick()
+                                            }
+                                            catchupState.value != null && isDouble && inRightZone -> {
+                                                seekByGlobal(+10_000); tick()
+                                            }
+                                            else -> showOverlay = !showOverlay
+                                        }
+                                        currentTapTime = System.currentTimeMillis()
+                                        currentTapX = pos.x
+                                    }
                                 }
                             },
-                            onLongPress = { if (tapError == null && !tapBarOpen) pauseToggle() }
+                            onLongPress = {
+                                android.util.Log.d("JTV-INPUT", "player long-press")
+                                if (tapError == null && !tapBarOpen) {
+                                    // Confirm-buzz for hold-to-pause — makes the hold feel
+                                    // registered on glass.
+                                    runCatching { haptics.performHapticFeedback(HapticFeedbackType.LongPress) }
+                                    pauseToggle()
+                                }
+                            }
                         )
                     }
             )
 
-            // ─── Right-edge volume gesture (touch) ───
-            // Classical player gesture: swipe up/down anywhere along the right ~30% of the screen
-            // (portrait AND landscape) to change volume. Only vertical drags are consumed, so taps
-            // in the strip still reach the full-screen tap handler — no dead zone.
+            // ─── Right-edge volume drag (touch only) ───
+            // Classical player gesture: swipe up/down along the right edge of the screen to change
+            // volume. Touch-only: a mouse drag on the TV emulator is a selection gesture, not a
+            // volume one, and the emulator routes drags to the touch handler as well.
+            if (isTouch) {
             var volumeOsd by remember { mutableStateOf<Float?>(null) }
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
                     .fillMaxHeight()
-                    .fillMaxWidth(0.30f)
+                    // Narrower than the old 30%: the ▲▼ zap pill rides the same edge, and a fat
+                    // strip left a wide dead zone where swipes hit the pill instead of volume.
+                    .fillMaxWidth(0.22f)
                     .pointerInput(Unit) {
                         detectVerticalDragGestures(
                             onDragStart = { readVolume() },
@@ -1593,9 +1722,11 @@ fun TvPlayerScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        if ((volumeOsd ?: 0f) <= 0.01f) "🔇" else "🔊",
-                        color = Color.White,
-                        style = MaterialTheme.typography.titleMedium
+                        "VOL",
+                        color = Color.White.copy(alpha = 0.7f),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
@@ -1605,6 +1736,34 @@ fun TvPlayerScreen(
                         fontWeight = FontWeight.SemiBold
                     )
                 }
+            }
+            } // end touch-only volume strip
+
+            // ─── Panel-close scrim (pointer devices) ───
+            // The full-height side panels (channels / categories / settings) left no tappable
+            // space outside them on portrait phones: the panel alone covers ~80-96% of the width
+            // and the right-edge volume strip swallows the rest — "tap anywhere outside to
+            // close" was literally impossible there. This transparent scrim sits UNDER the
+            // panels but OVER the video and the volume strip, so ANY tap outside a panel closes
+            // it, in every orientation and on every pointer device.
+            val panelCloseScrimActive = (isTouch || hasMouse) &&
+                (showChannelList || showCategoryList || showSettingsOverlay)
+            if (panelCloseScrimActive) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            detectTapGestures {
+                                letterActive = false
+                                showChannelList = false
+                                showCategoryList = false
+                                showSettingsOverlay = false
+                                // Re-claim root focus so the D-pad keeps working, and let the
+                                // overlay auto-hide timer run its course.
+                                runCatching { focusRequester.requestFocus() }
+                            }
+                        }
+                )
             }
         }
 
@@ -1638,7 +1797,9 @@ fun TvPlayerScreen(
                 StatLine("SPEED", "${exoPlayer.playbackParameters.speed}×")
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    "hold INFO or tap to close",
+                    // Back also closes this overlay on every input class — on touch there is no
+                    // INFO key at all, so the old hint advertised an impossible gesture.
+                    if (isTouch) "tap to close" else "back or hold INFO to close",
                     color = Color.White.copy(alpha = 0.45f),
                     style = MaterialTheme.typography.labelSmall
                 )
@@ -1682,7 +1843,12 @@ fun TvPlayerScreen(
                     )
                 }
                 Spacer(modifier = Modifier.width(12.dp))
-                Column {
+                Column(
+                    // weight(fill=false): bounds the name to the space LEFT AFTER the spinner is
+                    // measured — an unconstrained long name used to consume the whole remaining
+                    // row width and clip the spinner off the right edge.
+                    modifier = Modifier.weight(1f, fill = false)
+                ) {
                     Text(
                         String.format(Locale.US, "%02d", currentIndex + 1),
                         color = TvPrimary,
@@ -1741,7 +1907,7 @@ fun TvPlayerScreen(
                                 append("   ·   +${m}:${s.toString().padStart(2, '0')} behind")
                             }
                         },
-                        color = if (liveBehindSec != null && behind > 120) Color(0xFFFFB300) else Color.White.copy(alpha = 0.75f),
+                        color = if (liveBehindSec != null && behind > 120) TvAmber else Color.White.copy(alpha = 0.75f),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier
@@ -1763,7 +1929,9 @@ fun TvPlayerScreen(
                                     jumpToLive()
                                 }
                             }
-                            .padding(horizontal = 14.dp, vertical = 6.dp)
+                            // The primary recovery action on touch — keep it a real 48dp target.
+                            .heightIn(min = if (isTouch) 48.dp else 36.dp)
+                            .padding(horizontal = 14.dp, vertical = if (isTouch) 12.dp else 6.dp)
                     )
                 }
             }
@@ -1790,7 +1958,12 @@ fun TvPlayerScreen(
                     Text(
                         playbackError ?: "",
                         color = Color.White,
-                        fontWeight = FontWeight.SemiBold
+                        fontWeight = FontWeight.SemiBold,
+                        // Exception-derived messages can run long; on short landscape windows a
+                        // fully-wrapped message pushed the buttons off-screen.
+                        maxLines = 5,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
@@ -1812,13 +1985,19 @@ fun TvPlayerScreen(
                         ) {
                             Text(
                                 "Retry",
-                                modifier = Modifier.padding(horizontal = 28.dp, vertical = 10.dp),
+                                modifier = Modifier.padding(horizontal = 28.dp, vertical = 14.dp),
                                 color = Color.White,
                                 fontWeight = FontWeight.SemiBold
                             )
                         }
                         Surface(
-                            onClick = onBack,
+                            onClick = {
+                                // Open the in-player channel list instead of exiting the player:
+                                // the old behaviour backed out entirely — the label promised a
+                                // picker, not an exit.
+                                playbackError = null
+                                showChannelList = true
+                            },
                             shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
                             scale = ClickableSurfaceDefaults.scale(focusedScale = 1.05f),
                             colors = ClickableSurfaceDefaults.colors(
@@ -1834,7 +2013,7 @@ fun TvPlayerScreen(
                         ) {
                             Text(
                                 "Other channels",
-                                modifier = Modifier.padding(horizontal = 28.dp, vertical = 10.dp),
+                                modifier = Modifier.padding(horizontal = 28.dp, vertical = 14.dp),
                                 color = TvOnSurface,
                                 fontWeight = FontWeight.SemiBold
                             )
@@ -1853,7 +2032,9 @@ fun TvPlayerScreen(
         ) {
             Column(
                 modifier = Modifier
-                    .padding(top = 40.dp)
+                    // Overscan-safe like every other chrome element (was a hardcoded 40dp that
+                    // could clip on overscanned TV panels).
+                    .padding(top = overscanV() + 16.dp)
                     .clip(RoundedCornerShape(12.dp))
                     .background(Color.Black.copy(alpha = 0.7f))
                     .padding(horizontal = 20.dp, vertical = 10.dp),
@@ -1899,8 +2080,12 @@ fun TvPlayerScreen(
         AnimatedVisibility(
             // Hidden while any full-height panel (channel/category list, settings) is open: the
             // banner showing through the translucent panel read as ghost text, and its progress
-            // bar struck through the list rows like a rendering glitch.
-            visible = showOverlay && !showChannelList && !showCategoryList && !showSettingsOverlay,
+            // bar struck through the list rows like a rendering glitch. Also hidden under the
+            // error scrim, the programme sheet, the stats overlay and the zap strip (same
+            // ghosting; the hint bar already excluded those — the banner's list just missed them).
+            visible = showOverlay && !showChannelList && !showCategoryList && !showSettingsOverlay &&
+                !showProgrammes && !showStats && !showZapStrip &&
+                playbackError == null,
             enter = fadeIn(tween(TvMotion.ms())) + slideInVertically(tween(TvMotion.ms())) { -it },
             exit = fadeOut(tween(TvMotion.ms())) + slideOutVertically(tween(TvMotion.ms())) { -it },
             modifier = Modifier.align(Alignment.TopCenter)
@@ -1960,13 +2145,13 @@ fun TvPlayerScreen(
                                 // Replay mode badge — replaces the LIVE dot entirely.
                                 Box(
                                     modifier = Modifier
-                                        .background(Color(0xFFFFB300).copy(alpha = 0.22f), RoundedCornerShape(4.dp))
+                                        .background(TvAmber.copy(alpha = 0.22f), RoundedCornerShape(4.dp))
                                         .padding(horizontal = 8.dp, vertical = 4.dp)
                                 ) {
                                     Text(
                                         "▶ REPLAY",
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = Color(0xFFFFB300),
+                                        color = TvAmber,
                                         fontWeight = FontWeight.Bold
                                     )
                                 }
@@ -1993,26 +2178,26 @@ fun TvPlayerScreen(
                                         modifier = Modifier
                                             .size(6.dp)
                                             .clip(CircleShape)
-                                            .background(if (atEdge) TvLiveRed else Color(0xFFFFB300).copy(alpha = dotAlpha))
+                                            .background(if (atEdge) TvLiveRed else TvAmber.copy(alpha = dotAlpha))
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text(
                                         if (atEdge) "LIVE" else "+${behind}s",
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = if (atEdge) TvPrimary else Color(0xFFFFB300),
+                                        color = if (atEdge) TvPrimary else TvAmber,
                                         fontWeight = FontWeight.Bold
                                     )
                                 }
                             } else {
                                 Box(
                                     modifier = Modifier
-                                        .background(Color(0xFFFFD700).copy(alpha = 0.2f), RoundedCornerShape(4.dp))
+                                        .background(TvGold.copy(alpha = 0.2f), RoundedCornerShape(4.dp))
                                         .padding(horizontal = 8.dp, vertical = 4.dp)
                                 ) {
                                     Text(
                                         "⭐ FAVORITE",
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = Color(0xFFFFD700),
+                                        color = TvGold,
                                         fontWeight = FontWeight.Bold
                                     )
                                 }
@@ -2021,7 +2206,11 @@ fun TvPlayerScreen(
                             Text(
                                 ch?.group ?: "",
                                 style = MaterialTheme.typography.labelMedium,
-                                color = Color.White.copy(alpha = 0.7f)
+                                color = Color.White.copy(alpha = 0.7f),
+                                // Category names wrap to two lines on compact portrait widths and
+                                // grew the banner row — one ellipsized line keeps it stable.
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
 
@@ -2059,7 +2248,7 @@ fun TvPlayerScreen(
                                 androidx.compose.material3.LinearProgressIndicator(
                                     progress = { progress },
                                     modifier = Modifier.weight(1f).height(3.dp).clip(RoundedCornerShape(1.5.dp)),
-                                    color = if (catchup != null) Color(0xFFFFB300) else TvPrimary,
+                                    color = if (catchup != null) TvAmber else TvPrimary,
                                     // 0.15 vanished on the black video — the bar read as a
                                     // floating dash with no track.
                                     trackColor = Color.White.copy(alpha = 0.35f)
@@ -2090,9 +2279,11 @@ fun TvPlayerScreen(
         }
 
         // ─── Sleep-timer remaining chip ───
-        // Visible whenever a timer is armed so it can't silently surprise-exit the app.
+        // Visible whenever a timer is armed so it can't silently surprise-exit the app. Hidden
+        // while the info banner shows: both claim the top-right corner and the chip used to sit
+        // on top of the clock.
         AnimatedVisibility(
-            visible = sleepRemainingSec > 0,
+            visible = sleepRemainingSec > 0 && !showOverlay,
             enter = fadeIn(tween(TvMotion.ms())),
             exit = fadeOut(tween(TvMotion.ms())),
             modifier = Modifier
@@ -2134,72 +2325,166 @@ fun TvPlayerScreen(
             }
         }
 
-        // ─── Touch control cluster (bottom dock) ───
-        // Every remote-only action gets a tap target: channels, guide, numpad, aspect, rotate,
-        // play/pause, stats, settings. Visible together with the overlay (same 5s auto-hide).
-        // Docked bottom-center on ALL touch devices — the top-right slot collided with the
-        // channel info overlay in portrait and (now that the player locks to landscape) also
-        // clipped the EPG/progress lines in landscape. A bottom dock is thumb-reachable and
-        // clears both the info overlay and the hint bar.
-        val touchClusterVisible = isTouch && showOverlay && !showChannelList && !showCategoryList &&
-            !showSettingsOverlay && !showProgrammes && !showZapStrip && !showCatchupBar &&
+        // ─── On-screen control dock (touch AND mouse-capable devices) ───
+        // Every remote-only action gets a tap/click target: channels, guide, numpad, aspect,
+        // rotate, play/pause, stats, settings. Visible together with the overlay (same 5s
+        // auto-hide). Docked bottom-center on ALL pointer devices — the top-right slot collided
+        // with the channel info overlay in portrait and also clipped the EPG/progress lines in
+        // landscape. A bottom dock is thumb-reachable on phones and click-friendly for the mouse.
+        //
+        // A catch-up replay needs its seek bar on pointer devices too: the dock carries a ⏱ seek
+        // key whenever a replay is active — including after the bar auto-hides (it used to render
+        // only WHILE the bar was open, a no-op that left pointer users with no way back into the
+        // scrubber).
+        // Dock visibility: never while a panel or bar is open, never over the error scrim, and
+        // never during a LIVE tune-in — the zap splash carries the channel name in the same
+        // bottom band and the two overlapped on narrow phones (a multi-row dock reached right
+        // through it). Replays keep the dock during buffering so scrubbing doesn't flicker it.
+        val panelsClosedForDock = !showChannelList && !showCategoryList && !showSettingsOverlay &&
+            !showProgrammes && !showZapStrip && !showCatchupBar &&
             !showNumericOverlay && !showAudioSelector && !showQualitySelector && !showLangSelector &&
-            playbackError == null && !inPip.value
-        AnimatedVisibility(
-            visible = touchClusterVisible,
-            enter = fadeIn(tween(TvMotion.ms())),
-            exit = fadeOut(tween(TvMotion.ms())),
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(
-                    // Clears the bottom hint bar (~50dp) plus breathing room.
-                    bottom = 72.dp,
-                    start = overscanH(),
-                    end = overscanH()
-                )
-        ) {
-            // FlowRow so the keys wrap instead of overflowing the window edge; centered in the dock.
-            // Which buttons appear is user-configurable (Settings → Player Touch Dock).
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+            playbackError == null
+        val touchClusterVisible = pointerUi && showOverlay && panelsClosedForDock && !inPip.value &&
+            !(isBuffering && catchup == null)
+        // Dock LAYOUT (Settings → Player Touch Dock): one flow at a chosen bottom position, or
+        // split into two groups — navigation keys anchored bottom-LEFT, playback keys
+        // bottom-RIGHT (each wraps within its own half, so the groups can never collide).
+        val dockSplit by settingsManager.touchDockSplitFlow.collectAsState(initial = false)
+        val dockAlign by settingsManager.touchDockAlignFlow.collectAsState(initial = SettingsManager.DOCK_ALIGN_CENTER)
+
+        // Navigation group: channels / categories / programmes / number.
+        val dockNavKeys: @Composable () -> Unit = {
+            if (SettingsManager.DOCK_CHANNELS in dockButtons)
+                TouchKey("☰", "Channels") { tick(); showChannelList = true; showOverlay = true }
+            if (SettingsManager.DOCK_CHANNELS in dockButtons && groups.isNotEmpty())
+                TouchKey("🗂", "Categories") {
+                    tick()
+                    // The channel list opens with it: picking a category filters that list,
+                    // mirroring the state the remote's ←←← path lands in.
+                    showChannelList = true
+                    showCategoryList = true
+                    showOverlay = true
+                }
+            if (SettingsManager.DOCK_PROGRAMMES in dockButtons)
+                TouchKey("📅", "Programmes") {
+                    tick()
+                    channelIdForEpg?.let(onRequestChannelEpg) // never fetch with a blank id
+                    showProgrammes = true
+                    showOverlay = true
+                }
+            if (SettingsManager.DOCK_NUMPAD in dockButtons)
+                TouchKey("#", "Channel number") { tick(); showTouchNumpad = true }
+        }
+        // Playback group: aspect / rotate / PiP / pause / stats / settings (+ the ⏱ seek key).
+        val dockPlaybackKeys: @Composable () -> Unit = {
+            if (SettingsManager.DOCK_ASPECT in dockButtons)
+                TouchKey("⛶", "Aspect ratio") { tick(); cycleAspectRatio() }
+            if (SettingsManager.DOCK_ROTATE in dockButtons)
+                TouchKey("🔄", "Rotate") {
+                    tick()
+                    val act = context as? android.app.Activity
+                    if (act != null) {
+                        val landscape = act.resources.configuration.orientation ==
+                            android.content.res.Configuration.ORIENTATION_LANDSCAPE
+                        act.requestedOrientation = if (landscape)
+                            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                        else
+                            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                    }
+                }
+            if (SettingsManager.DOCK_PIP in dockButtons)
+                TouchKey("⧉", "Picture in picture") {
+                    tick()
+                    if (pipSupported) {
+                        runCatching { playerActivity?.enterPictureInPictureMode(buildPipParams()) }
+                    }
+                }
+            if (SettingsManager.DOCK_PAUSE in dockButtons)
+                TouchKey(if (userPaused) "▶" else "⏸", if (userPaused) "Play" else "Pause") { tick(); pauseToggle() }
+            if (SettingsManager.DOCK_STATS in dockButtons)
+                TouchKey("📊", "Stream info") { tick(); showStats = !showStats }
+            if (SettingsManager.DOCK_SETTINGS in dockButtons)
+                TouchKey("⚙", "Player settings") { tick(); showSettingsOverlay = true }
+            if (catchup != null) {
+                // Re-opens the replay seek bar after it auto-hides or was tapped closed —
+                // the only way back into the scrubber for touch/mouse users.
+                TouchKey("⏱", "Seek bar") {
+                    tick()
+                    showOverlay = true
+                    showCatchupBar = true
+                }
+            }
+        }
+
+        if (dockSplit) {
+            AnimatedVisibility(
+                visible = touchClusterVisible,
+                enter = fadeIn(tween(TvMotion.ms())),
+                exit = fadeOut(tween(TvMotion.ms())),
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(bottom = 72.dp, start = overscanH())
             ) {
-                if (SettingsManager.DOCK_CHANNELS in dockButtons)
-                    TouchKey("☰", "Channels") { showChannelList = true; showOverlay = true }
-                if (SettingsManager.DOCK_PROGRAMMES in dockButtons)
-                    TouchKey("📅", "Programmes") {
-                        channelIdForEpg?.let(onRequestChannelEpg) // never fetch with a blank id
-                        showProgrammes = true
-                        showOverlay = true
-                    }
-                if (SettingsManager.DOCK_NUMPAD in dockButtons)
-                    TouchKey("#", "Channel number") { showTouchNumpad = true }
-                if (SettingsManager.DOCK_ASPECT in dockButtons)
-                    TouchKey("⛶", "Aspect ratio") { cycleAspectRatio() }
-                if (SettingsManager.DOCK_ROTATE in dockButtons)
-                    TouchKey("🔄", "Rotate screen") {
-                        val act = context as? android.app.Activity
-                        if (act != null) {
-                            val landscape = act.resources.configuration.orientation ==
-                                android.content.res.Configuration.ORIENTATION_LANDSCAPE
-                            act.requestedOrientation = if (landscape)
-                                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                            else
-                                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                // Half-width container: the group wraps to a second row inside its own half
+                // instead of running into the playback group.
+                Box(modifier = Modifier.fillMaxWidth(0.48f)) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.Start),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) { dockNavKeys() }
+                }
+            }
+            AnimatedVisibility(
+                visible = touchClusterVisible,
+                enter = fadeIn(tween(TvMotion.ms())),
+                exit = fadeOut(tween(TvMotion.ms())),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(bottom = 72.dp, end = overscanH())
+            ) {
+                Box(modifier = Modifier.fillMaxWidth(0.48f), contentAlignment = Alignment.BottomEnd) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) { dockPlaybackKeys() }
+                }
+            }
+        } else {
+            AnimatedVisibility(
+                visible = touchClusterVisible,
+                enter = fadeIn(tween(TvMotion.ms())),
+                exit = fadeOut(tween(TvMotion.ms())),
+                modifier = Modifier
+                    .align(
+                        when (dockAlign) {
+                            SettingsManager.DOCK_ALIGN_LEFT -> Alignment.BottomStart
+                            SettingsManager.DOCK_ALIGN_RIGHT -> Alignment.BottomEnd
+                            else -> Alignment.BottomCenter
                         }
-                    }
-                if (SettingsManager.DOCK_PIP in dockButtons)
-                    TouchKey("⧉", "Picture in picture") {
-                        if (pipSupported) {
-                            runCatching { playerActivity?.enterPictureInPictureMode(buildPipParams()) }
+                    )
+                    .padding(
+                        // Clears the bottom hint bar (~50dp) plus breathing room.
+                        bottom = 72.dp,
+                        start = overscanH(),
+                        end = overscanH()
+                    )
+            ) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(
+                        8.dp,
+                        when (dockAlign) {
+                            SettingsManager.DOCK_ALIGN_LEFT -> Alignment.Start
+                            SettingsManager.DOCK_ALIGN_RIGHT -> Alignment.End
+                            else -> Alignment.CenterHorizontally
                         }
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (touchClusterVisible) {
+                        dockNavKeys()
+                        dockPlaybackKeys()
                     }
-                if (SettingsManager.DOCK_PAUSE in dockButtons)
-                    TouchKey(if (userPaused) "▶" else "⏸", if (userPaused) "Play" else "Pause") { pauseToggle() }
-                if (SettingsManager.DOCK_STATS in dockButtons)
-                    TouchKey("📊", "Stream info") { showStats = !showStats }
-                if (SettingsManager.DOCK_SETTINGS in dockButtons)
-                    TouchKey("⚙", "Player settings") { showSettingsOverlay = true }
+                }
             }
         }
 
@@ -2207,14 +2492,18 @@ fun TvPlayerScreen(
         // dock icon + slider panel were removed — swiping the right edge up/down is the classical,
         // one-handed control. ───
 
-        // ─── Zap buttons (right edge, touch) ───
-        if (zapEdgeButtons) AnimatedVisibility(
+        // ─── Zap buttons (right edge, pointer devices) ───
+        // Touch + mouse-only boxes/emulators: the dock has no next/previous key, so this pill is
+        // the on-screen zap affordance on every pointer device (real remotes keep CH±/↑↓).
+        if (zapEdgeButtons && pointerUi) AnimatedVisibility(
             visible = touchClusterVisible,
             enter = fadeIn(tween(TvMotion.ms())),
             exit = fadeOut(tween(TvMotion.ms())),
             modifier = Modifier
                 .align(Alignment.CenterEnd)
-                .padding(end = overscanH())
+                // Inset past the natural right-edge swipe start: the volume strip rides the same
+                // edge, and a pill flush to the screen edge ate every swipe that began on it.
+                .padding(end = overscanH() + 28.dp)
         ) {
             // Pill container behind both keys: the 55%-black chips were invisible on the black
             // video, leaving the ▲▼ glyphs floating with no affordance.
@@ -2225,13 +2514,13 @@ fun TvPlayerScreen(
                     .padding(6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                TouchKey("▲", "Next channel") { zapBy(+1) }
-                TouchKey("▼", "Previous channel") { zapBy(-1) }
+                TouchKey("▲", "Next") { tick(); zapBy(+1) }
+                TouchKey("▼", "Previous") { tick(); zapBy(-1) }
             }
         }
 
-        // ─── On-screen numpad (touch) ───
-        if (showTouchNumpad && isTouch) {
+        // ─── On-screen numpad (pointer devices) ───
+        if (showTouchNumpad && pointerUi) {
             TouchNumpadDialog(
                 onSubmit = { num ->
                     if (currentChannels.isNotEmpty()) {
@@ -2290,6 +2579,7 @@ fun TvPlayerScreen(
                     
                     val chId = currentChannel?.id ?: ""
                     val isFav = favoriteChannels.contains(chId)
+                    val isHidden = hiddenChannels.contains(chId)
                     
                     val qualities = listOf("auto", "high", "medium", "low")
                     val languages = listOf("hi", "en", "ta", "te", "ml", "bn", "mr", "gu", "pa", "or", "as")
@@ -2300,12 +2590,24 @@ fun TvPlayerScreen(
                             title = "Favorite Channel",
                             subtitle = if (isFav) "Remove from favorites" else "Add to favorites",
                             value = if (isFav) "★" else "☆",
-                            valueColor = if (isFav) Color(0xFFFFD700) else TvOnSurfaceVariant,
+                            valueColor = if (isFav) TvGold else TvOnSurfaceVariant,
                             onClick = {
                                 scope.launch { settingsManager.toggleFavoriteChannel(chId) }
                             }
                         )
                     }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    SettingsItem(
+                        title = "Hide Channel",
+                        subtitle = if (isHidden) "Show this channel on Home again" else "Remove this channel from Home, search and zap lists",
+                        value = if (isHidden) "Unhide" else "Hide",
+                        valueColor = if (isHidden) TvPrimary else TvOnSurfaceVariant,
+                        onClick = {
+                            scope.launch { settingsManager.toggleHiddenChannel(chId) }
+                        }
+                    )
                     
                     Spacer(modifier = Modifier.height(16.dp))
                     
@@ -2553,7 +2855,13 @@ fun TvPlayerScreen(
             channelProgs.filter { it.stopMs > nowMs }.take(10)
         }
         LaunchedEffect(showProgrammes) {
-            if (showProgrammes) runCatching { programmesFocus.requestFocus() }
+            if (showProgrammes) {
+                runCatching { programmesFocus.requestFocus() }
+            } else if (!showSettingsOverlay && !showCatchupBar) {
+                // Sheet rows held the focus and leave composition on close — without re-claiming
+                // the root focus the D-pad went dead (same failure the replay bar had).
+                runCatching { focusRequester.requestFocus() }
+            }
         }
         AnimatedVisibility(
             visible = showProgrammes,
@@ -2568,7 +2876,7 @@ fun TvPlayerScreen(
                     .padding(horizontal = overscanH(), vertical = TvDimens.SpaceMd)
             ) {
                 Column {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                         Text(
                             "Programme guide",
                             style = MaterialTheme.typography.titleMedium,
@@ -2576,10 +2884,15 @@ fun TvPlayerScreen(
                             fontWeight = FontWeight.Bold
                         )
                         Spacer(modifier = Modifier.width(10.dp))
+                        // Weight + ellipsis: an unconstrained long channel name pushed the row
+                        // wider than the sheet and clipped off-screen on narrow portrait windows.
                         Text(
                             currentChannel?.name ?: "",
                             style = MaterialTheme.typography.labelMedium,
-                            color = TvOnSurfaceVariant
+                            color = TvOnSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
                         )
                     }
                     Spacer(modifier = Modifier.height(10.dp))
@@ -2596,7 +2909,7 @@ fun TvPlayerScreen(
                                 item {
                                     Text(
                                         "▶ Replay — finished shows",
-                                        color = Color(0xFFFFB300),
+                                        color = TvAmber,
                                         fontWeight = FontWeight.Bold,
                                         style = MaterialTheme.typography.labelMedium,
                                         modifier = Modifier.padding(start = 12.dp, top = 2.dp, bottom = 4.dp)
@@ -2617,12 +2930,12 @@ fun TvPlayerScreen(
                                         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
                                         scale = ClickableSurfaceDefaults.scale(focusedScale = 1.02f),
                                         colors = ClickableSurfaceDefaults.colors(
-                                            containerColor = Color(0xFFFFB300).copy(alpha = 0.08f),
+                                            containerColor = TvAmber.copy(alpha = 0.08f),
                                             focusedContainerColor = TvDarkSurfaceVariant
                                         ),
                                         border = ClickableSurfaceDefaults.border(
                                             focusedBorder = androidx.tv.material3.Border(
-                                                border = androidx.compose.foundation.BorderStroke(2.dp, Color(0xFFFFB300)),
+                                                border = androidx.compose.foundation.BorderStroke(2.dp, TvAmber),
                                                 shape = RoundedCornerShape(8.dp)
                                             )
                                         )
@@ -2631,7 +2944,7 @@ fun TvPlayerScreen(
                                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Text("▶", color = Color(0xFFFFB300), style = MaterialTheme.typography.labelSmall)
+                                            Text("▶", color = TvAmber, style = MaterialTheme.typography.labelSmall)
                                             Spacer(modifier = Modifier.width(10.dp))
                                             Text(
                                                 bannerTimeFormat.format(Date(prog.startMs)),
@@ -2660,20 +2973,21 @@ fun TvPlayerScreen(
                                         modifier = Modifier.padding(start = 12.dp, top = 6.dp, bottom = 4.dp)
                                     )
                                 }
-                                itemsIndexed(items = sheetUpcoming) { _, prog ->
+                                itemsIndexed(items = sheetUpcoming) { upIdx, prog ->
                                     val isNow = nowMs >= prog.startMs && nowMs < prog.stopMs
-                                    Surface(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        onClick = {},
-                                        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
-                                        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.02f),
-                                        colors = ClickableSurfaceDefaults.colors(
-                                            containerColor = Color.Transparent,
-                                            focusedContainerColor = TvDarkSurfaceVariant
+                                    // Display-only: upcoming rows have no action, so they must not
+                                    // take focus — a highlighted row that OK does nothing on read as
+                                    // a bug and burned D-pad stops on the way to replay rows.
+                                    Box(
+                                        modifier = Modifier.fillMaxWidth().then(
+                                            if (upIdx == 0 && replayablePast.isEmpty())
+                                                Modifier.focusRequester(programmesFocus) else Modifier
                                         )
                                     ) {
                                         Row(
-                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 12.dp, vertical = 8.dp),
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             if (isNow) {
@@ -2739,7 +3053,11 @@ fun TvPlayerScreen(
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
-                        "↑↓ browse • OK watch • Back cancel",
+                        when {
+                            isTouch -> "TAP SELECT  •  TAP AGAIN WATCH"
+                            hasMouse -> "CLICK SELECT  •  CLICK AGAIN WATCH"
+                            else -> "↑↓ browse • OK watch • Back cancel"
+                        },
                         color = Color.White.copy(alpha = 0.55f),
                         style = MaterialTheme.typography.labelSmall
                     )
@@ -2754,7 +3072,18 @@ fun TvPlayerScreen(
                         val isSelected = index == stripIndex
                         val stripProgram = playerEpgData[channel.id]?.find { it.startMs <= nowMs && it.stopMs > nowMs }
                         Surface(
-                            onClick = { stripIndex = index },
+                            onClick = {
+                                // Pointer users have no OK key: first click selects, clicking the
+                                // already-selected row confirms the tune (same contract as the
+                                // remote's ↑↓ then OK).
+                                if (isSelected) {
+                                    currentIndex = stripIndex
+                                    showZapStrip = false
+                                    showOverlay = true
+                                } else {
+                                    stripIndex = index
+                                }
+                            },
                             shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
                             scale = ClickableSurfaceDefaults.scale(focusedScale = 1.04f),
                             colors = ClickableSurfaceDefaults.colors(
@@ -2815,14 +3144,23 @@ fun TvPlayerScreen(
         }
 
         // ─── Replay Control Bar (short-OK during a replay) ───
-        LaunchedEffect(showCatchupBar, userPaused) {
+        // Auto-hide re-arms on ANY bar interaction ([catchupTick] bumps from every control and
+        // the scrubber) — the old fixed 6s timer let the bar vanish mid-scrub, under the finger.
+        var catchupTick by remember { mutableIntStateOf(0) }
+        LaunchedEffect(showCatchupBar, userPaused, catchupTick) {
             if (!showCatchupBar) return@LaunchedEffect
             if (userPaused) return@LaunchedEffect // stay open while paused
             delay(6_000)
             showCatchupBar = false
         }
         LaunchedEffect(showCatchupBar) {
-            if (showCatchupBar) runCatching { catchupBarFocus.requestFocus() }
+            if (showCatchupBar) {
+                runCatching { catchupBarFocus.requestFocus() }
+            } else {
+                // Bar controls leave composition on close — without re-claiming the root focus
+                // D-pad input went dead until the user re-tuned a channel.
+                runCatching { focusRequester.requestFocus() }
+            }
         }
         AnimatedVisibility(
             visible = showCatchupBar && catchup != null,
@@ -2830,103 +3168,154 @@ fun TvPlayerScreen(
             exit = fadeOut(tween(sheetMs)) + slideOutVertically(tween(sheetMs)) { it },
             modifier = Modifier.align(Alignment.BottomCenter)
         ) {
-            Row(
+            // Narrow portrait windows get a two-row bar: the single-row layout carried ~420dp of
+            // fixed content, so on a 360dp phone the weighted slider collapsed to zero and the
+            // time readout + ● LIVE button clipped off the right edge.
+            val barCompact = isCompactWidth()
+            Column(
                 modifier = Modifier
                     .padding(horizontal = overscanH(), vertical = TvDimens.SpaceLg)
                     .clip(RoundedCornerShape(14.dp))
                     .background(Color.Black.copy(alpha = 0.88f))
                     .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 fun seekBy(deltaMs: Long) {
                     val dur = exoPlayer.duration
                     val target = (exoPlayer.currentPosition + deltaMs).coerceIn(0L, if (dur > 0) dur else Long.MAX_VALUE)
                     exoPlayer.seekTo(target)
                 }
-                Surface(
-                    modifier = Modifier.size(width = 64.dp, height = 44.dp),
-                    onClick = { seekBy(-30_000) },
-                    shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
-                    colors = ClickableSurfaceDefaults.colors(containerColor = TvDarkSurfaceVariant)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text("⏪", color = Color.White, fontWeight = FontWeight.Bold)
-                    }
-                }
-                Surface(
-                    modifier = Modifier.focusRequester(catchupBarFocus),
-                    onClick = {
-                        if (userPaused) { exoPlayer.play(); userPaused = false }
-                        else { exoPlayer.pause(); userPaused = true; showOverlay = true }
-                    },
-                    shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
-                    scale = ClickableSurfaceDefaults.scale(focusedScale = 1.06f),
-                    colors = ClickableSurfaceDefaults.colors(
-                        containerColor = TvPrimaryContainer,
-                        focusedContainerColor = TvPrimary
-                    )
-                ) {
-                    Box(modifier = Modifier.size(width = 56.dp, height = 44.dp), contentAlignment = Alignment.Center) {
-                        Text(if (userPaused) "▶" else "⏸", color = Color.White, fontSize = 18.sp)
-                    }
-                }
-                Surface(
-                    modifier = Modifier.size(width = 64.dp, height = 44.dp),
-                    onClick = { seekBy(30_000) },
-                    shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
-                    colors = ClickableSurfaceDefaults.colors(containerColor = TvDarkSurfaceVariant)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text("⏩", color = Color.White, fontWeight = FontWeight.Bold)
-                    }
-                }
-
-                // Scrubber: D-pad ←/→ steps through 100 discrete points when focused.
-                if (replayDurMs > 0) {
-                    androidx.compose.material3.Slider(
-                        value = replayPosMs.toFloat() / replayDurMs.toFloat(),
-                        onValueChange = { frac -> exoPlayer.seekTo((frac * replayDurMs).toLong()) },
-                        valueRange = 0f..1f,
-                        steps = 100,
-                        modifier = Modifier.weight(1f).height(32.dp)
-                    )
-                    Text(
-                        "${mmss(replayPosMs)} / ${mmss(replayDurMs)}",
-                        color = Color.White.copy(alpha = 0.8f),
-                        style = MaterialTheme.typography.labelMedium,
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                        modifier = Modifier.width(110.dp)
-                    )
-                } else {
-                    Text("buffering…", color = TvOnSurfaceVariant, style = MaterialTheme.typography.labelSmall)
-                }
-
-                Surface(
-                    onClick = {
-                        // Exit replay: clearing the derived replay re-keys the load effect onto live.
-                        startReplay(null)
-                        showCatchupBar = false
-                        showOverlay = true
-                        retryCount.intValue = 0
-                        playbackError = null
-                        isBuffering = true
-                        streamRefreshTrigger++
-                    },
-                    shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
-                    scale = ClickableSurfaceDefaults.scale(focusedScale = 1.06f),
-                    colors = ClickableSurfaceDefaults.colors(
-                        containerColor = Color(0xFFFFB300).copy(alpha = 0.25f),
-                        focusedContainerColor = Color(0xFFFFB300)
-                    )
-                ) {
-                    Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                        Text(
-                            "● LIVE",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            style = MaterialTheme.typography.labelLarge
+                // Shared by both the wide and the compact bar layout.
+                val replayLiveButton: @Composable () -> Unit = {
+                    Surface(
+                        onClick = {
+                            // Exit replay: clearing the derived replay re-keys the load effect onto live.
+                            startReplay(null)
+                            showCatchupBar = false
+                            showOverlay = true
+                            retryCount.intValue = 0
+                            playbackError = null
+                            isBuffering = true
+                            streamRefreshTrigger++
+                        },
+                        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
+                        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.06f),
+                        colors = ClickableSurfaceDefaults.colors(
+                            containerColor = TvAmber.copy(alpha = 0.25f),
+                            focusedContainerColor = TvAmber
                         )
+                    ) {
+                        Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                            Text(
+                                "● LIVE",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.labelLarge
+                            )
+                        }
+                    }
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Surface(
+                        modifier = Modifier.size(width = 64.dp, height = 48.dp),
+                        onClick = { catchupTick++; seekBy(-30_000) },
+                        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
+                        colors = ClickableSurfaceDefaults.colors(containerColor = TvDarkSurfaceVariant)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text("⏪", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    Surface(
+                        modifier = Modifier.focusRequester(catchupBarFocus),
+                        onClick = {
+                            catchupTick++
+                            if (userPaused) { exoPlayer.play(); userPaused = false }
+                            else { exoPlayer.pause(); userPaused = true; showOverlay = true }
+                        },
+                        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
+                        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.06f),
+                        colors = ClickableSurfaceDefaults.colors(
+                            containerColor = TvPrimaryContainer,
+                            focusedContainerColor = TvPrimary
+                        )
+                    ) {
+                        Box(modifier = Modifier.size(width = 56.dp, height = 48.dp), contentAlignment = Alignment.Center) {
+                            Text(if (userPaused) "▶" else "⏸", color = Color.White, fontSize = 18.sp)
+                        }
+                    }
+                    Surface(
+                        modifier = Modifier.size(width = 64.dp, height = 48.dp),
+                        onClick = { catchupTick++; seekBy(30_000) },
+                        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
+                        colors = ClickableSurfaceDefaults.colors(containerColor = TvDarkSurfaceVariant)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text("⏩", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    if (barCompact) {
+                        Spacer(modifier = Modifier.weight(1f))
+                        replayLiveButton()
+                    }
+                }
+                if (barCompact) {
+                    if (replayDurMs > 0) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            androidx.compose.material3.Slider(
+                                value = replayPosMs.toFloat() / replayDurMs.toFloat(),
+                                onValueChange = { frac ->
+                                    catchupTick++
+                                    exoPlayer.seekTo((frac * replayDurMs).toLong())
+                                },
+                                valueRange = 0f..1f,
+                                steps = 100,
+                                modifier = Modifier.weight(1f).height(32.dp)
+                            )
+                            Text(
+                                "${mmss(replayPosMs)} / ${mmss(replayDurMs)}",
+                                color = Color.White.copy(alpha = 0.8f),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                            )
+                        }
+                    } else {
+                        Text("buffering…", color = TvOnSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+                    }
+                } else {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        // Scrubber: D-pad ←/→ steps through 100 discrete points when focused.
+                        if (replayDurMs > 0) {
+                            androidx.compose.material3.Slider(
+                                value = replayPosMs.toFloat() / replayDurMs.toFloat(),
+                                onValueChange = { frac ->
+                                    catchupTick++
+                                    exoPlayer.seekTo((frac * replayDurMs).toLong())
+                                },
+                                valueRange = 0f..1f,
+                                steps = 100,
+                                modifier = Modifier.weight(1f).height(32.dp)
+                            )
+                            Text(
+                                "${mmss(replayPosMs)} / ${mmss(replayDurMs)}",
+                                color = Color.White.copy(alpha = 0.8f),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                modifier = Modifier.width(110.dp)
+                            )
+                        } else {
+                            Text("buffering…", color = TvOnSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+                        }
+                        replayLiveButton()
                     }
                 }
             }
@@ -2935,9 +3324,11 @@ fun TvPlayerScreen(
         // ─── Bottom Hint Bar ───
         AnimatedVisibility(
             // Also hidden under the settings panel: the hint used to overlap the Voice Boost
-            // row's subtitle at the panel's bottom edge.
+            // row's subtitle at the panel's bottom edge. Hidden under the replay bar (same
+            // bottom-center slot) and the error scrim.
             visible = showOverlay && !showChannelList && !showCategoryList &&
-                !showProgrammes && !showZapStrip && !showSettingsOverlay,
+                !showProgrammes && !showZapStrip && !showSettingsOverlay &&
+                !showCatchupBar && playbackError == null,
             enter = fadeIn(tween(TvMotion.ms())) + slideInVertically(tween(TvMotion.ms())) { it },
             exit = fadeOut(tween(TvMotion.ms())) + slideOutVertically(tween(TvMotion.ms())) { it },
             modifier = Modifier.align(Alignment.BottomCenter)
@@ -2954,13 +3345,27 @@ fun TvPlayerScreen(
                     .padding(horizontal = overscanH(), vertical = TvDimens.SpaceMd)
             ) {
                 Text(
-                    if (catchup != null)
-                        if (isTouch) "TAP CONTROLS  •  LONG-PRESS PAUSE  •  ⏪⏩ SEEK"
-                        else "↑↓/CH ZAP  •  OK CONTROLS  •  ← LIST  •  INFO (×2 GUIDE)  •  BACK EXIT"
-                    else if (isTouch)
-                        "TAP MENU  •  ▲▼ ZAP  •  # NUMBER  •  LONG-PRESS PAUSE"
-                    else
-                        "↑↓/CH ZAP  •  ← LIST  •  0-9 GO  •  OK INFO (×2 GUIDE)  •  →⏱ ASPECT  •  BACK EXIT",
+                    // Hints describe what's actually available: the touch/mouse lines are built
+                    // from what's configured (no "# NUMBER" when the numpad key is off) and the
+                    // remote line advertises the hidden long-press gestures.
+                    when {
+                        catchup != null && isTouch ->
+                            "⏪⏩ SEEK  •  TAP OUTSIDE CLOSE  •  ⏱ REOPENS SEEK"
+                        catchup != null && hasMouse ->
+                            "CLICK CONTROLS  •  ⏪⏩/SCRUB SEEK  •  ● LIVE  •  BACK EXIT"
+                        catchup != null ->
+                            "OK CONTROLS  •  ⏪⏩/SCRUB SEEK  •  ● LIVE  •  BACK EXIT"
+                        isTouch -> buildString {
+                            append("TAP MENU")
+                            if (zapEdgeButtons) append("  •  ▲▼ ZAP")
+                            if (SettingsManager.DOCK_NUMPAD in dockButtons) append("  •  # NUMBER")
+                            append("  •  EDGE SWIPE VOLUME  •  LONG-PRESS PAUSE")
+                        }
+                        hasMouse ->
+                            "CLICK VIDEO CONTROLS  •  ← CHANNELS  •  HOLD PAUSE  •  REMOTE KEYS WORK"
+                        else ->
+                            "↑↓ ZAP  •  ← CHANNELS  •  OK MENU  •  HOLD → ASPECT  •  HOLD INFO STATS"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = Color.White.copy(alpha = 0.6f),
                     modifier = Modifier.align(Alignment.Center)
@@ -3248,7 +3653,7 @@ private fun TouchKey(
 ) {
     Surface(
         onClick = onClick,
-        modifier = Modifier.size(width = 46.dp, height = 44.dp),
+        modifier = Modifier.size(width = 64.dp, height = 56.dp),
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(12.dp)),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1.06f),
         colors = ClickableSurfaceDefaults.colors(
@@ -3264,7 +3669,16 @@ private fun TouchKey(
         )
     ) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(label, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(label, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    contentDescription,
+                    color = Color.White.copy(alpha = 0.62f),
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
     }
 }
@@ -3279,6 +3693,8 @@ private fun TouchNumpadDialog(
     onDismiss: () -> Unit
 ) {
     var buffer by remember { mutableStateOf("") }
+    val haptics = LocalHapticFeedback.current
+    fun tick() { runCatching { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) } }
     val enterState = remember { MutableTransitionState(false).apply { targetState = true } }
     val ms = TvMotion.ms(TvMotion.SHEET_MS)
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -3318,8 +3734,11 @@ private fun TouchNumpadDialog(
                     keys.forEach { row ->
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             row.forEach { key ->
+                                val isGo = key == "GO"
+                                val goEnabled = buffer.toIntOrNull() != null
                                 Surface(
                                     onClick = {
+                                        tick()
                                         when (key) {
                                             "⌫" -> buffer = buffer.dropLast(1)
                                             "GO" -> buffer.toIntOrNull()?.let(onSubmit)
@@ -3342,7 +3761,13 @@ private fun TouchNumpadDialog(
                                             key,
                                             fontWeight = FontWeight.Bold,
                                             style = MaterialTheme.typography.titleMedium,
-                                            color = if (key == "GO" && buffer.toIntOrNull() != null) TvPrimary else Color.Unspecified
+                                            // GO reads as enabled only when the buffer parses —
+                                            // dimmed otherwise so a dead tap is expected.
+                                            color = when {
+                                                isGo && goEnabled -> TvPrimary
+                                                isGo -> TvOnSurfaceVariant.copy(alpha = 0.5f)
+                                                else -> Color.Unspecified
+                                            }
                                         )
                                     }
                                 }
@@ -3376,9 +3801,16 @@ private fun PickerSectionLabel(text: String) {
 
 /** One selectable row shared by the audio/subtitle picker. */
 @Composable
-private fun PickerOptionRow(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun PickerOptionRow(
+    label: String,
+    selected: Boolean,
+    initialFocus: Boolean = false,
+    onClick: () -> Unit
+) {
+    val rowFocus = remember { FocusRequester() }
+    LaunchedEffect(initialFocus) { if (initialFocus) runCatching { rowFocus.requestFocus() } }
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().focusRequester(rowFocus),
         onClick = onClick,
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),
@@ -3402,6 +3834,10 @@ private fun PickerOptionRow(label: String, selected: Boolean, onClick: () -> Uni
                 color = if (selected) com.fenyx.jtv.theme.TvPrimary else com.fenyx.jtv.theme.TvOnSurfaceVariant,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                // Long track labels ("Audio: English … Surround 5.1") used to wrap and grow the
+                // row, making the picker list jump in height while scrolling.
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
             )
             if (selected) {
@@ -3450,13 +3886,17 @@ private fun TrackSelectionDialog(
                 color = com.fenyx.jtv.theme.TvOnBackground
             )
             Spacer(modifier = Modifier.height(12.dp))
+            // First selected row anchors initial focus (same convention as TvPickerDialog).
+            val trackRowFocus = remember { FocusRequester() }
+            LaunchedEffect(Unit) { runCatching { trackRowFocus.requestFocus() } }
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(4.dp),
                 modifier = Modifier.weight(1f, fill = false).heightIn(max = 420.dp)
             ) {
                 item { PickerSectionLabel("AUDIO") }
                     itemsIndexed(audioOptions) { _, opt ->
-                        PickerOptionRow(opt.label, opt.selected) { onSelectAudio(opt); onDismiss() }
+                        val firstSelected = opt.selected && audioOptions.none { it.selected && audioOptions.indexOf(it) < audioOptions.indexOf(opt) }
+                        PickerOptionRow(opt.label, opt.selected, initialFocus = firstSelected) { onSelectAudio(opt); onDismiss() }
                     }
                     if (subtitleOptions.isNotEmpty()) {
                         item { Spacer(modifier = Modifier.height(6.dp)); PickerSectionLabel("SUBTITLES") }
@@ -3484,39 +3924,56 @@ private fun LetterRail(
     onSelect: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // 26dp letters were sub-half-size tap targets on phones; touch gets 36dp cells (the rail
+    // column widens to fit), TVs keep the compact rail. Cells are weighted instead of fixed-size:
+    // 26 × 36dp = 936dp overflowed the rail's bounded height on phones and clipped the last
+    // letters (T–Z) off the bottom — weights guarantee all 26 always fit, each with a full-height
+    // tap target around its visible circle.
+    val isTouch = LocalIsTouch.current
+    val cell = if (isTouch) 36.dp else 26.dp
+    val haptic = LocalHapticFeedback.current
     Column(
         modifier = modifier
-            .width(42.dp)
+            .width(cell + 16.dp)
             .background(if (active) TvDarkSurfaceVariant else Color.Transparent, RoundedCornerShape(8.dp))
             .then(
                 if (active) Modifier.border(2.dp, TvFocusBorder, RoundedCornerShape(8.dp)) else Modifier
             )
             .padding(vertical = 4.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.SpaceEvenly
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
         letters.forEachIndexed { i, L ->
             val selected = i == selectedIndex
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
-                    .size(26.dp)
-                    .clip(CircleShape)
-                    .background(
-                        when {
-                            selected && active -> TvPrimary
-                            selected -> TvPrimaryContainer.copy(alpha = 0.55f)
-                            else -> Color.Transparent
-                        }
-                    )
-                    .clickable { onSelect(i) }
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .clickable {
+                        runCatching { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+                        onSelect(i)
+                    }
             ) {
-                Text(
-                    L.toString(),
-                    color = if (selected) Color.White else Color.White.copy(alpha = 0.5f),
-                    fontSize = 10.sp,
-                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
-                )
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(cell)
+                        .clip(CircleShape)
+                        .background(
+                            when {
+                                selected && active -> TvPrimary
+                                selected -> TvPrimaryContainer.copy(alpha = 0.55f)
+                                else -> Color.Transparent
+                            }
+                        )
+                ) {
+                    Text(
+                        L.toString(),
+                        color = if (selected) Color.White else Color.White.copy(alpha = 0.5f),
+                        fontSize = if (isTouch) 13.sp else 10.sp,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
             }
         }
     }
@@ -3534,6 +3991,10 @@ fun TvPickerDialog(
     // shares the app's motion feel.
     val enterState = remember { MutableTransitionState(false).apply { targetState = true } }
     val ms = TvMotion.ms(TvMotion.SHEET_MS)
+    // The currently-selected option takes initial focus, so OK-enter → OK-enter cycles work
+    // without arrowing from the top of a long list every time.
+    val selectedRowFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { selectedRowFocus.requestFocus() } }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -3571,7 +4032,9 @@ fun TvPickerDialog(
                     val isSelected = value == currentValue
 
                     Surface(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().then(
+                            if (isSelected) Modifier.focusRequester(selectedRowFocus) else Modifier
+                        ),
                         onClick = { onSelect(value) },
                         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
                         scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),

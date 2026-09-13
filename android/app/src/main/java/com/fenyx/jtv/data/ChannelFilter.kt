@@ -28,10 +28,27 @@ object ChannelFilter {
     }
 
     /**
-     * Applies the language filter, then the sidebar category / Favorites selection, then the
-     * canonical sort (favorites first, then channel number — or A–Z by name when
-     * [sortAlphabetical] is set) — the single source of truth for "what list am I looking at"
-     * across Home and the player, so every surface loads the same order.
+     * Language-scoped channel list for the Settings "Hide / Unhide Channels" manager: the
+     * language filter (multi-select, empty = all) applied WITHOUT the hidden-channel exclusion —
+     * hidden channels must stay listed so they can be unhidden — and without the sidebar group
+     * filter. Sorted A–Z: the manager is a lookup surface, so a stable name order beats the
+     * Home sort preference.
+     */
+    fun languageScoped(
+        display: List<Channel>,
+        variants: Map<String, List<ChannelLanguage.Variant>>,
+        languages: Set<String>
+    ): List<Channel> =
+        display.filter { languageMatches(it, variants, languages) }
+            .sortedBy { it.name.trim().lowercase() }
+
+    /**
+     * Applies the hidden-channel exclusion, then the language filter, then the sidebar
+     * category / Favorites selection, then the canonical sort (favorites first, then channel
+     * number — or A–Z by name when [sortAlphabetical] is set) — the single source of truth
+     * for "what list am I looking at" across Home and the player, so every surface loads
+     * the same order. Hidden always wins (even over Favorites) so a hidden channel can
+     * never surface anywhere until it is unhidden.
      */
     fun apply(
         display: List<Channel>,
@@ -39,9 +56,11 @@ object ChannelFilter {
         group: String?,
         favorites: Set<String>,
         languages: Set<String>,
-        sortAlphabetical: Boolean = false
+        sortAlphabetical: Boolean = false,
+        hidden: Set<String> = emptySet()
     ): List<Channel> {
-        val byLanguage = display.filter { languageMatches(it, variants, languages) }
+        val visible = if (hidden.isEmpty()) display else display.filter { it.id !in hidden }
+        val byLanguage = visible.filter { languageMatches(it, variants, languages) }
         val byGroup = when (group) {
             null, GROUP_ALL -> byLanguage
             GROUP_FAVORITES -> byLanguage.filter { favorites.contains(it.id) }
@@ -64,14 +83,17 @@ object ChannelFilter {
     /**
      * Channel counts per sidebar category (incl. the All/Favorites sentinels) under the given
      * language filter — the number the grid would show if that chip were selected.
+     * Hidden channels are excluded so counts match the visible grid.
      */
     fun countsByGroup(
         display: List<Channel>,
         variants: Map<String, List<ChannelLanguage.Variant>>,
         favorites: Set<String>,
-        languages: Set<String>
+        languages: Set<String>,
+        hidden: Set<String> = emptySet()
     ): Map<String, Int> {
-        val byLang = display.filter { languageMatches(it, variants, languages) }
+        val visible = if (hidden.isEmpty()) display else display.filter { it.id !in hidden }
+        val byLang = visible.filter { languageMatches(it, variants, languages) }
         return buildMap {
             put(GROUP_ALL, byLang.size)
             put(GROUP_FAVORITES, byLang.count { it.id in favorites })

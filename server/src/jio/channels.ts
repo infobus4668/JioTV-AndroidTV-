@@ -7,6 +7,7 @@ export interface Channel {
   group: string;
   language: string;
   isDrm: boolean;
+  isCatchup?: boolean;
   channelNumber: number;
 }
 
@@ -47,13 +48,16 @@ async function fetchChannelPage(url: string, categoryMap: Record<string, string>
     for (const c of result) {
       const id = Number(c.channel_id);
       if (!id || out.has(id)) continue;
+      const isDrm = c.isDrm === true || String(c.isDrm) === "true" || c.streamType === "mpd" || c.isDrm === undefined;
+      const isCatchup = c.isCatchupAvailable === true || String(c.isCatchupAvailable) === "true";
       out.set(id, {
         id: String(id),
         name: c.channel_name || "Unknown",
         logoUrl: `https://jiotvimages.cdn.jio.com/dare_images/images/${c.logoUrl ?? ""}`,
         group: categoryMap[String(c.channelCategoryId)] ?? "Other",
         language: JIO_LANG[String(c.channelLanguageId)] ?? "Other",
-        isDrm: true,
+        isDrm,
+        isCatchup,
         channelNumber: id,
       });
     }
@@ -69,11 +73,11 @@ export async function getChannels(force = false): Promise<Channel[]> {
   const categoryMap = await fetchDictionary();
   const merged = new Map<number, Channel>();
   await fetchChannelPage(
-    "https://jiotvapi.cdn.jio.com/apis/v1.4/getMobileChannelList/get/?langId=6&devicetype=phone&os=android&usertype=JIO&version=396",
+    "https://jiotvapi.cdn.jio.com/apis/v1.4/getMobileChannelList/get/?langId=6&devicetype=phone&os=android&usertype=JIO&version=422",
     categoryMap, merged
   );
   await fetchChannelPage(
-    "https://jiotvapi.cdn.jio.com/apis/v3.1/getMobileChannelList/get/?langId=6&os=android&devicetype=phone&usertype=JIO&version=389",
+    "https://jiotvapi.cdn.jio.com/apis/v3.1/getMobileChannelList/get/?langId=6&os=android&devicetype=phone&usertype=JIO&version=422",
     categoryMap, merged
   );
 

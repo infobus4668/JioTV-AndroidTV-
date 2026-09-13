@@ -19,6 +19,15 @@ import kotlinx.coroutines.sync.withPermit
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
+    /** Snapshot of the five list-shaping inputs; combined with the hidden set below. */
+    private data class FilterBase(
+        val all: List<Channel>,
+        val group: String?,
+        val favs: Set<String>,
+        val langs: Set<String>,
+        val sortAz: Boolean
+    )
+
     companion object {
         // Sentinel category values for the Home sidebar. Real Jio categories never collide with these.
         const val GROUP_ALL: String = com.fenyx.jtv.data.ChannelFilter.GROUP_ALL
@@ -34,6 +43,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _favoriteChannels = MutableStateFlow<Set<String>>(emptySet())
     val favoriteChannels: StateFlow<Set<String>> = _favoriteChannels.asStateFlow()
+
+    // Owner-hidden channels (empty = show everything). Excluded from every list — home grid,
+    // EPG, search, player zap lists — until unhidden in Settings.
+    private val _hiddenChannels = MutableStateFlow<Set<String>>(emptySet())
+    val hiddenChannels: StateFlow<Set<String>> = _hiddenChannels.asStateFlow()
 
     private val _allChannels = MutableStateFlow<List<Channel>>(emptyList())
 
@@ -85,6 +99,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _filteredChannels = MutableStateFlow<List<Channel>>(emptyList())
     val filteredChannels: StateFlow<List<Channel>> = _filteredChannels.asStateFlow()
 
+    // Settings "Hide / Unhide Channels" manager: every channel in the current language scope,
+    // INCLUDING hidden ones (they must stay listed so they can be unhidden), sorted A–Z. Unlike
+    // filteredChannels it excludes nothing by hidden state and applies no category filter.
+    private val _manageChannels = MutableStateFlow<List<Channel>>(emptyList())
+    val manageChannels: StateFlow<List<Channel>> = _manageChannels.asStateFlow()
+
     private var hasLoaded: Boolean = false
 
     // "Refresh from Server" button state (server mode).
@@ -98,6 +118,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             settingsManager.favoriteChannelsFlow.collect { favorites ->
                 _favoriteChannels.value = favorites
             }
+        }
+        viewModelScope.launch {
+            settingsManager.hiddenChannelsFlow.collect { _hiddenChannels.value = it }
         }
         viewModelScope.launch {
             settingsManager.languageFilterFlow.collect { _languageFilter.value = it }
@@ -128,18 +151,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _displayChannels.value = display
             }
         }
-        // Compute filtered/sorted channels reactively in the ViewModel (not in Compose)
+        // Compute filtered/sorted channels reactively in the ViewModel (not in Compose).
+        // Nested combine (instead of one 6-flow combine) so overload resolution stays on the
+        // well-worn 5-flow + 2-flow shapes.
         viewModelScope.launch {
-            combine(
+            val base = combine(
                 _displayChannels, _selectedGroup, _favoriteChannels,
                 _languageFilter, _sortAlphabetical
             ) { all, group, favs, langs, sortAz ->
-                com.fenyx.jtv.data.ChannelFilter.apply(all, variantMap, group, favs, langs, sortAz) to
-                    com.fenyx.jtv.data.ChannelFilter.countsByGroup(all, variantMap, favs, langs)
+                FilterBase(all, group, favs, langs, sortAz)
+            }
+            combine(base, _hiddenChannels) { b, hidden ->
+                com.fenyx.jtv.data.ChannelFilter.apply(b.all, variantMap, b.group, b.favs, b.langs, b.sortAz, hidden) to
+                    com.fenyx.jtv.data.ChannelFilter.countsByGroup(b.all, variantMap, b.favs, b.langs, hidden)
             }.collect { (filtered, catCounts) ->
                 _filteredChannels.value = filtered
                 _categoryCounts.value = catCounts
             }
+        }
+        // Language-scoped list for the Settings channel manager (hidden channels included).
+        viewModelScope.launch {
+            combine(_displayChannels, _languageFilter) { all, langs ->
+                com.fenyx.jtv.data.ChannelFilter.languageScoped(all, variantMap, langs)
+            }.collect { _manageChannels.value = it }
         }
         // NOTE: EPG is intentionally NOT fetched here. Downloading + parsing the XMLTV file on every
         // launch hammered the CPU on low-end TVs and slowed boot. MainScreen triggers fetchEpg() only
@@ -203,12 +237,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun getAllChannels(): List<Channel> = _displayChannels.value
 
     /** Get channels filtered by group for channel switching within a category, sorted by favorites.
-     *  Applies the same language filter and sort mode as the Home grid so the player's zap list
-     *  loads identically. */
+     *  Applies the same language filter, hidden exclusion and sort mode as the Home grid so the
+     *  player's zap list loads identically. */
     fun getChannelsByGroup(group: String?): List<Channel> {
         return com.fenyx.jtv.data.ChannelFilter.apply(
             _displayChannels.value, variantMap, group, _favoriteChannels.value,
-            _languageFilter.value, _sortAlphabetical.value
+            _languageFilter.value, _sortAlphabetical.value, _hiddenChannels.value
         )
     }
 
@@ -222,6 +256,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun toggleLanguageFilter(language: String) {
         val current = _languageFilter.value
         setLanguageFilter(if (language in current) current - language else current + language)
+    }
+
+    /** Hides/unhides one channel (persisted; excluded from every list until unhidden). */
+    fun toggleHiddenChannel(channelId: String) {
+        val current = _hiddenChannels.value
+        val next = if (channelId in current) current - channelId else current + channelId
+        _hiddenChannels.value = next
+        viewModelScope.launch { settingsManager.setHiddenChannel(channelId, channelId !in current) }
+    }
+
+    /** Shows every hidden channel again. */
+    fun clearHiddenChannels() {
+        _hiddenChannels.value = emptySet()
+        viewModelScope.launch { settingsManager.clearHiddenChannels() }
     }
 
     fun setSelectedGroup(group: String?) {
@@ -346,17 +394,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * Forces a fresh channel-list pull from the network (bypassing the 24h cache), unlike [retry]
      * which may serve a still-fresh cache. Used by Settings so users can pick up Jio list changes
-     * (new channels, corrected language ids) without waiting for the TTL.
+     * (new channels, corrected language ids) without waiting for the TTL — and by the Home top-bar
+     * Refresh button, which previously called [retry] and did NOTHING network-y while the disk
+     * cache was fresh (the button only re-read the same file).
      */
     fun forceRefreshChannels() {
         if (_serverRefreshing.value) return
         viewModelScope.launch {
             _serverRefreshing.value = true
+            // Drives the top-bar spinner — without this the refresh ran silently with no
+            // in-flight feedback.
+            _isLoading.value = true
             _serverRefreshMsg.value = null
             val app = getApplication<Application>()
             val result = JioApiClient.getMobileChannelList(app, forceNetwork = true)
             result.getOrNull()?.takeIf { it.isNotEmpty() }?.let { publishChannels(it) }
             _serverRefreshMsg.value = if (result.isSuccess) "Refreshed" else (result.exceptionOrNull()?.message ?: "Failed")
+            _isLoading.value = false
             _serverRefreshing.value = false
             kotlinx.coroutines.delay(4000)
             _serverRefreshMsg.value = null

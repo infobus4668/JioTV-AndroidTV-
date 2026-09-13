@@ -33,6 +33,10 @@ class SettingsManager(private val context: Context) {
         private val EPG_URL = stringPreferencesKey("epg_url")
         private val FAVORITE_CHANNELS = stringPreferencesKey("favorite_channels")
 
+        // Per-channel hide list (channel ids the owner removed from every list — e.g. unsuitable
+        // for kids/elderly). Stored like favorites; empty = show everything.
+        private val HIDDEN_CHANNELS = stringPreferencesKey("hidden_channels")
+
         // Language filter for the channel list (multi-select, empty = show all), stored like favorites.
         private val LANGUAGE_FILTER = stringPreferencesKey("language_filter")
 
@@ -57,6 +61,12 @@ class SettingsManager(private val context: Context) {
         // they actually use stay on screen.
         private val TOUCH_DOCK_BUTTONS = stringPreferencesKey("touch_dock_buttons")
 
+        // Dock LAYOUT: single row/flow at [TOUCH_DOCK_ALIGN] position, or split into two anchored
+        // groups (navigation keys bottom-left, playback keys bottom-right).
+        private val TOUCH_DOCK_SPLIT = booleanPreferencesKey("touch_dock_split")
+        // Single-dock position: 0 = bottom-center, 1 = bottom-left, 2 = bottom-right.
+        private val TOUCH_DOCK_ALIGN = intPreferencesKey("touch_dock_align")
+
         // ▲▼ zap buttons floating on the video's right edge (touch devices).
         private val ZAP_EDGE_BUTTONS = booleanPreferencesKey("zap_edge_buttons")
 
@@ -79,6 +89,11 @@ class SettingsManager(private val context: Context) {
         val DOCK_BUTTONS_DEFAULT = setOf(
             DOCK_CHANNELS, DOCK_PROGRAMMES, DOCK_ROTATE, DOCK_PAUSE, DOCK_SETTINGS
         )
+
+        // DOCK_ALIGN_* values for touchDockAlignFlow (single-dock bottom position).
+        const val DOCK_ALIGN_CENTER = 0
+        const val DOCK_ALIGN_LEFT = 1
+        const val DOCK_ALIGN_RIGHT = 2
         
         private val AUTH_SSO_TOKEN = stringPreferencesKey("auth_sso_token")
         private val AUTH_AUTH_TOKEN = stringPreferencesKey("auth_auth_token")
@@ -190,6 +205,11 @@ class SettingsManager(private val context: Context) {
         if (serialized.isEmpty()) emptySet() else serialized.split(",").toSet()
     }
 
+    val hiddenChannelsFlow: Flow<Set<String>> = context.dataStore.data.map { preferences ->
+        val serialized = preferences[HIDDEN_CHANNELS] ?: ""
+        if (serialized.isEmpty()) emptySet() else serialized.split(",").filter { it.isNotBlank() }.toSet()
+    }
+
     val languageFilterFlow: Flow<Set<String>> = context.dataStore.data.map { preferences ->
         val serialized = preferences[LANGUAGE_FILTER] ?: ""
         if (serialized.isEmpty()) emptySet() else serialized.split(",").filter { it.isNotBlank() }.toSet()
@@ -270,6 +290,24 @@ class SettingsManager(private val context: Context) {
 
     suspend fun setZapEdgeButtons(enabled: Boolean) {
         context.dataStore.edit { preferences -> preferences[ZAP_EDGE_BUTTONS] = enabled }
+    }
+
+    val touchDockSplitFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[TOUCH_DOCK_SPLIT] ?: false
+    }
+
+    suspend fun setTouchDockSplit(split: Boolean) {
+        context.dataStore.edit { preferences -> preferences[TOUCH_DOCK_SPLIT] = split }
+    }
+
+    val touchDockAlignFlow: Flow<Int> = context.dataStore.data.map { preferences ->
+        preferences[TOUCH_DOCK_ALIGN] ?: DOCK_ALIGN_CENTER
+    }
+
+    suspend fun setTouchDockAlign(align: Int) {
+        context.dataStore.edit { preferences ->
+            preferences[TOUCH_DOCK_ALIGN] = align.coerceIn(DOCK_ALIGN_CENTER, DOCK_ALIGN_RIGHT)
+        }
     }
 
     val authDataFlow: Flow<JioApiClient.AuthData?> = context.dataStore.data.map { preferences ->
@@ -393,6 +431,30 @@ class SettingsManager(private val context: Context) {
                 set.add(channelId)
             }
             preferences[FAVORITE_CHANNELS] = set.joinToString(",")
+        }
+    }
+
+    suspend fun setHiddenChannel(channelId: String, hidden: Boolean) {
+        context.dataStore.edit { preferences ->
+            val current = preferences[HIDDEN_CHANNELS] ?: ""
+            val set = if (current.isEmpty()) mutableSetOf() else current.split(",").filter { it.isNotBlank() }.toMutableSet()
+            if (hidden) set.add(channelId) else set.remove(channelId)
+            preferences[HIDDEN_CHANNELS] = set.joinToString(",")
+        }
+    }
+
+    suspend fun toggleHiddenChannel(channelId: String) {
+        context.dataStore.edit { preferences ->
+            val current = preferences[HIDDEN_CHANNELS] ?: ""
+            val set = if (current.isEmpty()) mutableSetOf() else current.split(",").filter { it.isNotBlank() }.toMutableSet()
+            if (set.contains(channelId)) set.remove(channelId) else set.add(channelId)
+            preferences[HIDDEN_CHANNELS] = set.joinToString(",")
+        }
+    }
+
+    suspend fun clearHiddenChannels() {
+        context.dataStore.edit { preferences ->
+            preferences.remove(HIDDEN_CHANNELS)
         }
     }
 

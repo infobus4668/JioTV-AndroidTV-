@@ -3,6 +3,8 @@ package com.fenyx.jtv.ui.login
 import android.view.KeyEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.*
@@ -29,6 +31,7 @@ import androidx.compose.ui.input.key.nativeKeyCode
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.foundation.layout.imePadding
 import androidx.tv.material3.Text
 import androidx.tv.material3.MaterialTheme
 import com.fenyx.jtv.theme.LocalIsTouch
@@ -118,6 +121,34 @@ fun LoginScreen(
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
+    // OTP resend: SMS delivery does silently fail — without a resend affordance the only recovery
+    // was "Change Number" → retype the whole number. A 30s countdown throttles re-sends.
+    var resendCountdown by remember { mutableIntStateOf(0) }
+    LaunchedEffect(step) {
+        if (step == 2) {
+            resendCountdown = 30
+            while (resendCountdown > 0) {
+                kotlinx.coroutines.delay(1_000)
+                resendCountdown--
+            }
+        }
+    }
+    val resendOtp: () -> Unit = resendOtp@{
+        if (isLoading || resendCountdown > 0) return@resendOtp
+        isLoading = true
+        errorMessage = null
+        scope.launch {
+            val result = JioApiClient.sendOTP(mobileNumber)
+            isLoading = false
+            if (result.isSuccess) {
+                otp = ""
+                resendCountdown = 30
+            } else {
+                errorMessage = result.exceptionOrNull()?.message ?: "Failed to resend OTP"
+            }
+        }
+    }
+
     // Error feedback: a short horizontal shake draws the eye to the message without any sound.
     val shake = remember { androidx.compose.animation.core.Animatable(0f) }
     LaunchedEffect(errorMessage) {
@@ -132,8 +163,9 @@ fun LoginScreen(
     }
 
     // Hardware BACK: from the OTP step go back to the number step; from the number step return to the
-    // setup chooser instead of exiting the app.
-    androidx.activity.compose.BackHandler {
+    // setup chooser instead of exiting the app. Disabled when neither move exists — the old
+    // unconditional handler swallowed Back on step 1 with no onChangeMethod and the user was stuck.
+    androidx.activity.compose.BackHandler(enabled = step == 2 || onChangeMethod != null) {
         if (step == 2) { step = 1; otp = ""; errorMessage = null }
         else onChangeMethod?.invoke()
     }
@@ -154,7 +186,10 @@ fun LoginScreen(
         }
     }
     
-    val onSubmit: () -> Unit = {
+    val onSubmit: () -> Unit = onSubmit@{
+        // In-flight guard: re-taps / re-OKs used to fire parallel sendOTP calls (double OTP
+        // SMS, race on the step flip).
+        if (isLoading) return@onSubmit
         if (step == 1) {
             if (mobileNumber.length >= 10) {
                 isLoading = true
@@ -199,28 +234,41 @@ fun LoginScreen(
             .background(MaterialTheme.colorScheme.background)
             // TV overscan on TVs; compact margins on touch devices.
             .padding(horizontal = overscanH(), vertical = overscanV())
-            .onPreviewKeyEvent {
-                // Hardware keyboard support
-                if (it.type == androidx.compose.ui.input.key.KeyEventType.KeyDown) {
-                    val digit = when (it.key) {
-                        Key.Zero -> "0"; Key.One -> "1"; Key.Two -> "2"; Key.Three -> "3"
-                        Key.Four -> "4"; Key.Five -> "5"; Key.Six -> "6"; Key.Seven -> "7"
-                        Key.Eight -> "8"; Key.Nine -> "9"
-                        else -> null
+            // Hardware-key digit/backspace support is for TV remotes with a number pad only.
+            // On touch devices (incl. tablets/Chromebooks with a physical keyboard) consuming
+            // digits here starves the real text fields of input.
+            .then(
+                if (!isTouch) Modifier.onPreviewKeyEvent {
+                    if (it.type == androidx.compose.ui.input.key.KeyEventType.KeyDown) {
+                        val digit = when (it.key) {
+                            Key.Zero -> "0"; Key.One -> "1"; Key.Two -> "2"; Key.Three -> "3"
+                            Key.Four -> "4"; Key.Five -> "5"; Key.Six -> "6"; Key.Seven -> "7"
+                            Key.Eight -> "8"; Key.Nine -> "9"
+                            else -> null
+                        }
+                        if (digit != null) {
+                            onNumberClick(digit)
+                            return@onPreviewKeyEvent true
+                        }
+                        if (it.key == Key.Backspace) {
+                            onBackspace()
+                            return@onPreviewKeyEvent true
+                        }
                     }
-                    if (digit != null) {
-                        onNumberClick(digit)
-                        return@onPreviewKeyEvent true
-                    }
-                    if (it.key == Key.Backspace) {
-                        onBackspace()
-                        return@onPreviewKeyEvent true
-                    }
-                }
-                false
-            },
+                    false
+                } else Modifier
+            ),
+        // Vertical scroll + IME padding: in phone landscape the IME used to cover the centered
+        // form and the Send/Login button was unreachable while typing.
         contentAlignment = Alignment.Center
     ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .imePadding()
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.Center
+        ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
@@ -267,6 +315,7 @@ fun LoginScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     Surface(
                         onClick = onChangeMethod,
+                        modifier = Modifier.heightIn(min = 44.dp),
                         colors = ClickableSurfaceDefaults.colors(
                             containerColor = MaterialTheme.colorScheme.surfaceVariant,
                             focusedContainerColor = MaterialTheme.colorScheme.primary,
@@ -275,7 +324,7 @@ fun LoginScreen(
                     ) {
                         Text(
                             "← Use a different sign-in method",
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.onSurface
                         )
@@ -317,17 +366,31 @@ fun LoginScreen(
                     Spacer(modifier = Modifier.height(32.dp))
                     Surface(
                         onClick = onSubmit,
+                        modifier = Modifier.heightIn(min = 48.dp),
+                        // Focused colour stays primary while loading (see the Login button below).
                         colors = ClickableSurfaceDefaults.colors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            containerColor = if (isLoading) MaterialTheme.colorScheme.surfaceVariant
+                                             else MaterialTheme.colorScheme.primaryContainer,
                             focusedContainerColor = MaterialTheme.colorScheme.primary,
                             focusedContentColor = MaterialTheme.colorScheme.onPrimary
                         )
                     ) {
-                        Text(
-                            if (isLoading) "Sending..." else "Send OTP",
-                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
+                        Box(modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp), contentAlignment = Alignment.Center) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (isLoading) {
+                                    androidx.compose.material3.CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                }
+                                Text(
+                                    if (isLoading) "Sending..." else "Send OTP",
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                        }
                     }
                 } else {
                     Text(
@@ -354,21 +417,61 @@ fun LoginScreen(
                     Spacer(modifier = Modifier.height(32.dp))
                     Surface(
                         onClick = onSubmit,
+                        modifier = Modifier.heightIn(min = 48.dp),
+                        // Focused colour stays primary while loading: the old swap to surfaceVariant
+                        // made the FOCUSED button render identically focused or not on remotes.
                         colors = ClickableSurfaceDefaults.colors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            containerColor = if (isLoading) MaterialTheme.colorScheme.surfaceVariant
+                                             else MaterialTheme.colorScheme.primaryContainer,
                             focusedContainerColor = MaterialTheme.colorScheme.primary,
                             focusedContentColor = MaterialTheme.colorScheme.onPrimary
                         )
                     ) {
-                        Text(
-                            if (isLoading) "Verifying..." else "Login",
-                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
+                        Box(modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp), contentAlignment = Alignment.Center) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (isLoading) {
+                                    androidx.compose.material3.CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                }
+                                Text(
+                                    if (isLoading) "Verifying..." else "Login",
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                        }
                     }
                     Spacer(modifier = Modifier.height(16.dp))
+                    // Resend affordance during the OTP wait (countdown re-arms on a successful send).
+                    if (resendCountdown > 0) {
+                        Text(
+                            "Resend code in ${resendCountdown}s",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Surface(
+                            onClick = resendOtp,
+                            modifier = Modifier.heightIn(min = 44.dp),
+                            colors = ClickableSurfaceDefaults.colors(
+                                focusedContainerColor = MaterialTheme.colorScheme.primary,
+                                focusedContentColor = MaterialTheme.colorScheme.onPrimary
+                            )
+                        ) {
+                            Text(
+                                "Resend code",
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
                     Surface(
                         onClick = { step = 1; otp = ""; errorMessage = null },
+                        modifier = Modifier.heightIn(min = 44.dp),
                         colors = ClickableSurfaceDefaults.colors(
                             focusedContainerColor = MaterialTheme.colorScheme.primary,
                             focusedContentColor = MaterialTheme.colorScheme.onPrimary
@@ -376,7 +479,7 @@ fun LoginScreen(
                     ) {
                         Text(
                             "Change Number",
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                             color = MaterialTheme.colorScheme.onSurface
                         )
                     }
@@ -384,9 +487,10 @@ fun LoginScreen(
             }
             if (!isTouch) {
                 // Right side: Numpad. Land initial remote focus on the "1" key so the user can type
-                // immediately without hunting for focus.
+                // immediately without hunting for focus. Re-requested per step: the step-1/step-2
+                // buttons swap above, and the removed focused node used to leave focus nowhere.
                 val numpadFocus = remember { FocusRequester() }
-                LaunchedEffect(Unit) { runCatching { numpadFocus.requestFocus() } }
+                LaunchedEffect(step) { runCatching { numpadFocus.requestFocus() } }
                 TvNumpad(
                     onNumberClick = onNumberClick,
                     onBackspace = onBackspace,
@@ -394,6 +498,7 @@ fun LoginScreen(
                     firstKeyModifier = Modifier.focusRequester(numpadFocus)
                 )
             }
+        }
         }
     }
 }
@@ -410,7 +515,11 @@ private fun TvInputDisplay(value: String, label: String, placeholder: String) {
         Spacer(modifier = Modifier.height(6.dp))
         Box(
             modifier = Modifier
-                .widthIn(min = 300.dp)
+                // Capped at the designed 300dp, but SHRINKS on narrow windows: the old hard
+                // 300dp floor overflowed freeform/small emulator windows inside the weight(1f)
+                // form column and pushed the digits past the edge.
+                .fillMaxWidth(0.95f)
+                .widthIn(max = 300.dp)
                 .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(10.dp))
                 .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
                 .padding(horizontal = 18.dp, vertical = 14.dp)

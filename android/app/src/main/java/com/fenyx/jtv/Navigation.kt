@@ -68,8 +68,9 @@ fun MainNavigation() {
     // collapse ran (0 channels), which is what caused the black "0 channels / Loading…" screen on boot.
     val allChannels by mainViewModel.displayChannels.collectAsState()
     val isLoading by mainViewModel.isLoading.collectAsState()
+    val hiddenChannels by mainViewModel.hiddenChannels.collectAsState()
 
-    androidx.compose.runtime.LaunchedEffect(autoplayLastChannel, lastChannelId, allChannels, isLoading) {
+    androidx.compose.runtime.LaunchedEffect(autoplayLastChannel, lastChannelId, allChannels, isLoading, hiddenChannels) {
         when (autoplayLastChannel) {
             true -> {
                 when {
@@ -81,6 +82,8 @@ fun MainNavigation() {
                     allChannels.isEmpty() && !isLoading -> mainViewModel.fetchChannels()
                     allChannels.isNotEmpty() -> {
                         hasAutoPlayed.value = true
+                        // Never autoplay a channel the owner has hidden — fall through to Home.
+                        if (lastChannelId != null && hiddenChannels.contains(lastChannelId)) return@LaunchedEffect
                         val channelIndex = allChannels.indexOfFirst { it.id == lastChannelId }
                         if (channelIndex != -1) {
                             backStack.add(Player(channelIndex = channelIndex, group = lastChannelGroup))
@@ -205,11 +208,12 @@ fun MainNavigation() {
                     // Memoize the expensive per-group grouping + index lookups so they run once per
                     // channel-list change, not on every recomposition (this was a real source of
                     // player-open / settings-open lag: it re-filtered all ~1300 channels for every group).
-                    val channels = androidx.compose.runtime.remember(playerArgs.group, allChannels) {
+                    // Keyed on hiddenChannels too so hiding/unhiding refreshes the in-player lists.
+                    val channels = androidx.compose.runtime.remember(playerArgs.group, allChannels, hiddenChannels) {
                         if (playerArgs.group != null) mainViewModel.getChannelsByGroup(playerArgs.group)
                         else allChannels
                     }
-                    val allChannelsByGroup = androidx.compose.runtime.remember(playerGroups, allChannels) {
+                    val allChannelsByGroup = androidx.compose.runtime.remember(playerGroups, allChannels, hiddenChannels) {
                         playerGroups.associateWith { group -> mainViewModel.getChannelsByGroup(group) }
                     }
                     val filteredIndex = androidx.compose.runtime.remember(channels, allChannels, playerArgs.channelIndex) {

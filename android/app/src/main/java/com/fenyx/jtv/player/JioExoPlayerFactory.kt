@@ -113,8 +113,8 @@ object JioExoPlayerFactory {
 
         // Buffering tuned for smooth LIVE playback on a wired connection. Large buffers ride out CDN
         // stalls at the live edge (the main cause of mid-view "loading" + black flashes). largeHeap is
-        // set in the manifest so this is comfortably within RAM. After a rebuffer we wait for a solid
-        // cushion (12s) before resuming so playback doesn't stutter-loop.
+        // set in the manifest so this is comfortably within RAM. After a rebuffer we wait for a short
+        // 5s cushion before resuming so a stall recovers fast without stutter-looping.
         val maxBufferMs = (maxBufferSec.coerceIn(15, 180)) * 1000
         val minBufferMs = (maxBufferMs / 2).coerceAtLeast(15000)
         val loadControl = DefaultLoadControl.Builder()

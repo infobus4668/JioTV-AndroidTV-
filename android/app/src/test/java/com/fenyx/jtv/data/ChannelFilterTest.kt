@@ -160,4 +160,81 @@ class ChannelFilterTest {
         )
         assertEquals(listOf("AAJ TAK", "sony sab", "  Star Plus"), out.map { it.name })
     }
+
+    @Test
+    fun apply_hiddenChannelsAreExcludedEverywhere() {
+        val channels = listOf(
+            ch("1", "A", group = "News", language = "Hindi"),
+            ch("2", "B", group = "News", language = "Hindi"),
+            ch("3", "C", group = "Sports", language = "Hindi")
+        )
+        val out = ChannelFilter.apply(
+            channels, emptyMap(), ChannelFilter.GROUP_ALL, emptySet(), emptySet(), hidden = setOf("2")
+        )
+        assertEquals(listOf("1", "3"), out.map { it.id })
+        // Hidden beats the Favorites sentinel too.
+        val favs = ChannelFilter.apply(
+            channels, emptyMap(), ChannelFilter.GROUP_FAVORITES,
+            favorites = setOf("2"), languages = emptySet(), hidden = setOf("2")
+        )
+        assertEquals(0, favs.size)
+    }
+
+    @Test
+    fun countsByGroup_excludesHiddenChannels() {
+        val channels = listOf(
+            ch("1", "A", group = "News", language = "Hindi"),
+            ch("2", "B", group = "News", language = "Hindi")
+        )
+        val counts = ChannelFilter.countsByGroup(
+            channels, emptyMap(), emptySet(), emptySet(), hidden = setOf("2")
+        )
+        assertEquals(1, counts[ChannelFilter.GROUP_ALL])
+        assertEquals(1, counts["News"])
+    }
+
+    // ─── languageScoped (Settings channel manager) ───
+
+    @Test
+    fun languageScoped_keepsHiddenChannelsListed() {
+        // The whole point of the manager: hidden channels MUST appear (to be unhidden), unlike apply().
+        val channels = listOf(
+            ch("1", "A", language = "Hindi"),
+            ch("2", "B", language = "Hindi")
+        )
+        val out = ChannelFilter.languageScoped(channels, emptyMap(), emptySet())
+        assertEquals(listOf("1", "2"), out.map { it.id })
+    }
+
+    @Test
+    fun languageScoped_appliesLanguageFilterAndSortsAZ() {
+        val channels = listOf(
+            ch("3", "Zee TV", language = "Hindi"),
+            ch("1", "Aaj Tak", language = "Hindi"),
+            ch("2", "Sun TV", language = "Tamil")
+        )
+        val out = ChannelFilter.languageScoped(channels, emptyMap(), setOf("Hindi"))
+        assertEquals(listOf("Aaj Tak", "Zee TV"), out.map { it.name })
+    }
+
+    @Test
+    fun languageScoped_emptyFilterReturnsAllSorted() {
+        val channels = listOf(
+            ch("2", "b", language = "Hindi"),
+            ch("1", "a", language = "Tamil")
+        )
+        val out = ChannelFilter.languageScoped(channels, emptyMap(), emptySet())
+        assertEquals(listOf("1", "2"), out.map { it.id })
+    }
+
+    @Test
+    fun languageScoped_collapsedFamilySurvivesWhenAnyVariantMatches() {
+        val feeds = listOf(
+            ch("1", "Star Sports 1 Hindi", language = "Hindi"),
+            ch("2", "Star Sports 1 Tamil", language = "Tamil")
+        )
+        val (display, variants) = ChannelLanguage.collapse(feeds)
+        val tamilOnly = ChannelFilter.languageScoped(display, variants, setOf("Tamil"))
+        assertEquals(1, tamilOnly.size)
+    }
 }

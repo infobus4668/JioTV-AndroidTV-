@@ -5,6 +5,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,7 +54,11 @@ fun SetupScreen(
         modifier = modifier
             .fillMaxSize()
             .background(TvDarkBackground)
-            .tvOverscan(),
+            .tvOverscan()
+            // Landscape phones (~360dp tall) can't fit headline + subtitle + the 240dp cards —
+            // without scroll the card row clipped ~12dp off the bottom edge. Inert on TVs where
+            // everything already fits.
+            .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {

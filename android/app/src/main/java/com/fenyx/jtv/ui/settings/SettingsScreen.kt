@@ -11,6 +11,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.*
@@ -24,17 +25,22 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.tv.material3.Text
 import androidx.tv.material3.MaterialTheme
 import com.fenyx.jtv.theme.Surface
+import com.fenyx.jtv.theme.LocalIsTouch
+import com.fenyx.jtv.ui.main.tvFastNavKeys
 import androidx.tv.material3.ClickableSurfaceDefaults
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.foundation.focusGroup
 import com.fenyx.jtv.data.SettingsManager
 import com.fenyx.jtv.theme.*
 import kotlinx.coroutines.launch
@@ -80,24 +86,40 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
     // Player touch dock: which on-screen buttons show over the video + the edge ▲▼ zap keys.
     val touchDockButtons by settingsManager.touchDockButtonsFlow.collectAsState(initial = SettingsManager.DOCK_BUTTONS_DEFAULT)
     val zapEdgeButtons by settingsManager.zapEdgeButtonsFlow.collectAsState(initial = true)
+    // Dock layout: single group at a chosen bottom position, or nav-left/playback-right split.
+    val dockSplit by settingsManager.touchDockSplitFlow.collectAsState(initial = false)
+    val dockAlign by settingsManager.touchDockAlignFlow.collectAsState(initial = SettingsManager.DOCK_ALIGN_CENTER)
 
     // Channel-language filter (moved here from the Home screen): multi-select, applies to the
     // home grid AND the player's zap list everywhere via MainViewModel.
     val availableChannelLanguages by mainViewModel.availableLanguages.collectAsState()
     val channelLanguageFilter by mainViewModel.languageFilter.collectAsState()
     val allChannels by mainViewModel.channels.collectAsState()
+    val hiddenChannels by mainViewModel.hiddenChannels.collectAsState()
+    // Language-scoped channel list for the hide/unhide manager (hidden channels included, A–Z).
+    val manageChannels by mainViewModel.manageChannels.collectAsState()
     val channelLanguageCounts = remember(allChannels) {
         allChannels.groupingBy { it.language }.eachCount()
     }
 
     var showLanguagePicker by remember { mutableStateOf(false) }
     var showChannelLangPicker by remember { mutableStateOf(false) }
+    var showChannelManager by remember { mutableStateOf(false) }
+    var showDockAlignPicker by remember { mutableStateOf(false) }
     var showQualityPicker by remember { mutableStateOf(false) }
     var showPlayerResizeModePicker by remember { mutableStateOf(false) }
     var showBufferPicker by remember { mutableStateOf(false) }
     var showEpgUrlDialog by remember { mutableStateOf(false) }
     var showEpgLayoutPicker by remember { mutableStateOf(false) }
     var showDensityPicker by remember { mutableStateOf(false) }
+    // Destructive-action confirmations (Sign-in Method change / Logout).
+    var showSignOutConfirm by remember { mutableStateOf(false) }
+    var showLogoutConfirm by remember { mutableStateOf(false) }
+    val isTouch = LocalIsTouch.current
+    // The on-screen player dock also serves mouse-capable non-touch devices (TV emulator,
+    // air-mouse boxes), so its configuration section shows for both.
+    val hasMouse = com.fenyx.jtv.theme.LocalHasMouse.current
+    val pointerUi = isTouch || hasMouse
 
     // ─── Update check ───
     // Sideloaded APKs get no store update prompts, so Settings offers a manual check + a banner
@@ -197,24 +219,10 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
     )
 
     // ─── Root Box ───
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .onPreviewKeyEvent { keyEvent ->
-                if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.Back) {
-                    when {
-                        showLanguagePicker -> { showLanguagePicker = false; true }
-                        showChannelLangPicker -> { showChannelLangPicker = false; true }
-                        showQualityPicker -> { showQualityPicker = false; true }
-                        showPlayerResizeModePicker -> { showPlayerResizeModePicker = false; true }
-                        showBufferPicker -> { showBufferPicker = false; true }
-                        showEpgLayoutPicker -> { showEpgLayoutPicker = false; true }
-                        showDensityPicker -> { showDensityPicker = false; true }
-                        else -> false
-                    }
-                } else false
-            }
-    ) {
+    // No root Back interception: every picker is a androidx Dialog (a separate window that
+    // receives and dismisses Back itself via onDismissRequest), so the old root handler never
+    // fired — it was dead code that silently missed whichever dialog got added next.
+    Box(modifier = modifier.fillMaxSize()) {
         // ─── Main Settings Layout ───
         // Two-pane on TV/tablet widths (title rail + list). On narrow phone windows the fixed
         // 280dp title rail would leave ~100dp for the actual settings, so it collapses into a
@@ -317,7 +325,13 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
                                         fontWeight = FontWeight.Bold
                                     )
                                     Text(
-                                        "Tap to open the download page",
+                                        // Mouse-capable non-touch devices (PC emulators, air-mouse
+                                        // boxes) get "Click" — "Press OK" named a key they don't have.
+                                        when {
+                                            isTouch -> "Tap to open the download page"
+                                            hasMouse -> "Click to open the download page"
+                                            else -> "Press OK to open the download page"
+                                        },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = TvOnSurfaceVariant
                                     )
@@ -341,13 +355,9 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
                         },
                         value = "Change",
                         valueColor = TvPrimary,
-                        // Returning to the chooser = clear credentials + reset the chosen mode.
-                        onClick = {
-                            scope.launch {
-                                settingsManager.setSetupMode(null)
-                                settingsManager.clearAuthData()
-                            }
-                        }
+                        // Confirmation required: one stray OK/tap used to wipe credentials and
+                        // dump the user to first-boot setup with no way back but re-login.
+                        onClick = { showSignOutConfirm = true }
                     )
                 }
 
@@ -368,8 +378,8 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
                         title = "Logout from JTV",
                         subtitle = "Clear your credentials and exit",
                         icon = Icons.AutoMirrored.Filled.ExitToApp,
-                        valueColor = Color(0xFFFF5252),
-                        onClick = { scope.launch { settingsManager.clearAuthData() } }
+                        valueColor = TvError,
+                        onClick = { showLogoutConfirm = true }
                     )
                 }
 
@@ -404,6 +414,22 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
                         subtitle = "Order channel lists alphabetically instead of by channel number (home grid and player)",
                         isEnabled = sortAlphabetical,
                         onClick = { scope.launch { settingsManager.setChannelSortAlphabetical(!sortAlphabetical) } }
+                    )
+                }
+
+                item {
+                    SettingsItem(
+                        title = "Hide / Unhide Channels",
+                        subtitle = if (channelLanguageFilter.isEmpty()) {
+                            "Manage every channel right here — hide or unhide without leaving Settings"
+                        } else {
+                            val langLabel = "${channelLanguageFilter.size} selected language" +
+                                if (channelLanguageFilter.size == 1) "" else "s"
+                            "Manage $langLabel right here — hide or unhide without leaving Settings"
+                        },
+                        value = if (hiddenChannels.isEmpty()) "Manage" else "${hiddenChannels.size} hidden",
+                        valueColor = TvPrimary,
+                        onClick = { showChannelManager = true }
                     )
                 }
 
@@ -451,6 +477,8 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
                 }
 
                 item {
+                    // Disabled while a sync runs: the row kept full focus/press treatment but the
+                    // click silently no-op'd — the disabled visual now matches the behaviour.
                     SettingsItem(
                         title = "Refresh EPG Data",
                         subtitle = "Force download and parse the latest EPG",
@@ -463,14 +491,17 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
                             EpgSyncStatus.ERROR -> "Error"
                         },
                         valueColor = when (epgSyncStatus) {
-                            EpgSyncStatus.ERROR -> Color(0xFFFF5252)
-                            EpgSyncStatus.COMPLETED -> Color(0xFF4CAF50)
+                            EpgSyncStatus.ERROR -> TvError
+                            EpgSyncStatus.COMPLETED -> TvOnlineGreen
                             EpgSyncStatus.IDLE -> TvPrimary
                             else -> TvOnSurfaceVariant
                         },
-                        onClick = { 
+                        clickable = epgSyncStatus == EpgSyncStatus.IDLE ||
+                            epgSyncStatus == EpgSyncStatus.COMPLETED ||
+                            epgSyncStatus == EpgSyncStatus.ERROR,
+                        onClick = {
                             if (epgSyncStatus == EpgSyncStatus.IDLE || epgSyncStatus == EpgSyncStatus.COMPLETED || epgSyncStatus == EpgSyncStatus.ERROR) {
-                                mainViewModel.fetchEpg(forceRefresh = true) 
+                                mainViewModel.fetchEpg(forceRefresh = true)
                             }
                         }
                     )
@@ -556,14 +587,45 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
 
 
 
-                item { SectionHeader("Player Touch Dock") }
+                // Pointer-device section (touch AND mouse-capable devices): the dock never renders
+                // on remote-only TVs, so a D-pad user had 10 dead rows to scroll past here.
+                if (pointerUi) {
+                item { SectionHeader("On-Screen Player Keys") }
 
                 item {
                     Text(
-                        "Choose which control buttons appear over the video on touch devices. Off-screen actions stay reachable from the panels.",
+                        "Choose which control buttons appear over the video on touch/mouse devices, and how they are laid out. Off-screen actions stay reachable from the panels.",
                         style = MaterialTheme.typography.bodySmall,
                         color = TvOnSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
+                    )
+                }
+
+                item {
+                    // LAYOUT: one group at a chosen bottom position, or two anchored groups.
+                    SettingsToggle(
+                        title = "Split Dock Into Two Groups",
+                        subtitle = "Navigation keys (channels, programmes, number) anchor bottom-left; playback keys (pause, aspect, rotate, settings…) anchor bottom-right — thumb-reachable in one hand each. Each group wraps inside its own half, so they never collide.",
+                        isEnabled = dockSplit,
+                        onClick = { scope.launch { settingsManager.setTouchDockSplit(!dockSplit) } }
+                    )
+                }
+
+                item {
+                    // Only meaningful in the single-group layout; in split mode each group owns
+                    // its edge, so the row disables itself instead of pretending to work.
+                    SettingsItem(
+                        title = "Dock Position",
+                        subtitle = if (dockSplit) "Split layout anchors the groups to both corners — turn off Split to choose a position"
+                        else "Where the on-screen keys sit at the bottom",
+                        value = when (dockAlign) {
+                            SettingsManager.DOCK_ALIGN_LEFT -> "Bottom left"
+                            SettingsManager.DOCK_ALIGN_RIGHT -> "Bottom right"
+                            else -> "Bottom center"
+                        },
+                        valueColor = TvPrimary,
+                        clickable = !dockSplit,
+                        onClick = { showDockAlignPicker = true }
                     )
                 }
 
@@ -571,7 +633,7 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
                 item { DockToggle(SettingsManager.DOCK_PROGRAMMES, "Programmes 📅", "EPG schedule for the current channel") }
                 item { DockToggle(SettingsManager.DOCK_NUMPAD, "Channel number #", "On-screen number pad for direct channel entry") }
                 item { DockToggle(SettingsManager.DOCK_ASPECT, "Aspect ratio ⛶", "Cycle video scaling modes") }
-                item { DockToggle(SettingsManager.DOCK_ROTATE, "Rotate screen ⟳", "Toggle portrait / landscape") }
+                item { DockToggle(SettingsManager.DOCK_ROTATE, "Rotate ⟳", "Toggle portrait / landscape") }
                 item { DockToggle(SettingsManager.DOCK_PIP, "Picture-in-picture ⧉", "Minimise the player to a floating window") }
                 item { DockToggle(SettingsManager.DOCK_PAUSE, "Play / Pause ⏸", "Pause or resume playback") }
                 item { DockToggle(SettingsManager.DOCK_STATS, "Stream info 📊", "Bitrate / decoder / buffer diagnostics") }
@@ -580,10 +642,11 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
                 item {
                     SettingsToggle(
                         title = "Edge Zap Buttons ▲▼",
-                        subtitle = "Floating next/previous channel buttons on the right edge of the video",
+                        subtitle = "Floating next/previous buttons on the right edge of the video",
                         isEnabled = zapEdgeButtons,
                         onClick = { scope.launch { settingsManager.setZapEdgeButtons(!zapEdgeButtons) } }
                     )
+                }
                 }
 
                 item { SectionHeader("About") }
@@ -594,6 +657,7 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
                         subtitle = "JTV",
                         value = if (localVersion.isNotEmpty()) "v$localVersion" else "",
                         valueColor = TvOnSurfaceVariant,
+                        clickable = false,
                         onClick = { }
                     )
                 }
@@ -604,7 +668,11 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
                         subtitle = when {
                             updateChecking -> "Querying the GitHub releases API…"
                             showingNoUpdate -> "You're on the latest version."
-                            else -> "Tap to check for a newer release."
+                            else -> when {
+                                isTouch -> "Tap to check for a newer release."
+                                hasMouse -> "Click to check for a newer release."
+                                else -> "Press OK to check for a newer release."
+                            }
                         },
                         value = if (updateChecking) "…" else "↻",
                         valueColor = TvPrimary,
@@ -628,6 +696,19 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
                 onToggle = { mainViewModel.toggleLanguageFilter(it) },
                 onClear = { mainViewModel.setLanguageFilter(emptySet()) },
                 onDismiss = { showChannelLangPicker = false }
+            )
+        }
+
+        if (showChannelManager) {
+            ChannelManagerDialog(
+                channels = manageChannels,
+                allChannels = allChannels,
+                hidden = hiddenChannels,
+                languageSummary = if (channelLanguageFilter.isEmpty()) "All languages"
+                else channelLanguageFilter.sorted().joinToString(", "),
+                onToggle = { mainViewModel.toggleHiddenChannel(it) },
+                onShowAll = { mainViewModel.clearHiddenChannels() },
+                onDismiss = { showChannelManager = false }
             )
         }
 
@@ -706,6 +787,25 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
             }
         }
 
+        if (showDockAlignPicker) {
+            Dialog(onDismissRequest = { showDockAlignPicker = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+                PickerDialog(
+                    title = "Dock Position",
+                    options = listOf(
+                        SettingsManager.DOCK_ALIGN_CENTER.toString() to "Bottom center",
+                        SettingsManager.DOCK_ALIGN_LEFT.toString() to "Bottom left",
+                        SettingsManager.DOCK_ALIGN_RIGHT.toString() to "Bottom right"
+                    ),
+                    currentValue = dockAlign.toString(),
+                    onSelect = { value ->
+                        scope.launch { settingsManager.setTouchDockAlign(value.toInt()) }
+                        showDockAlignPicker = false
+                    },
+                    onDismiss = { showDockAlignPicker = false }
+                )
+            }
+        }
+
         if (showBufferPicker) {
             Dialog(onDismissRequest = { showBufferPicker = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
                 PickerDialog(
@@ -724,6 +824,11 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
         if (showEpgUrlDialog) {
             Dialog(onDismissRequest = { showEpgUrlDialog = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
                 var tempUrl by remember { mutableStateOf(epgUrl) }
+                var urlFieldFocused by remember { mutableStateOf(false) }
+                // Empty / non-http(s) URLs were accepted silently and EPG then just showed nothing.
+                val urlInvalid = tempUrl.isNotBlank() &&
+                    !tempUrl.trim().startsWith("http://", ignoreCase = true) &&
+                    !tempUrl.trim().startsWith("https://", ignoreCase = true)
                 val urlFieldFocus = remember { FocusRequester() }
                 val epgKeyboard = LocalSoftwareKeyboardController.current
                 LaunchedEffect(Unit) {
@@ -739,42 +844,212 @@ fun SettingsScreen(modifier: Modifier = Modifier, mainViewModel: MainViewModel) 
                         // Never wider than the design width, but shrink to the window on phones
                         // (fixed 500dp overflowed narrow portrait screens).
                         modifier = Modifier.fillMaxWidth(0.92f).widthIn(max = 500.dp)
-                            .background(TvDarkSurface, RoundedCornerShape(16.dp)).padding(24.dp),
+                            .background(TvDarkSurface, RoundedCornerShape(16.dp)).padding(24.dp)
+                            // imePadding: on phones / short landscape panels the IME covered the
+                            // centered Cancel/Save row (same bug LoginScreen fixed).
+                            .imePadding(),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text("Edit EPG URL", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = TvOnBackground)
                         Spacer(modifier = Modifier.height(24.dp))
                         Box(
-                            modifier = Modifier.fillMaxWidth().height(56.dp).background(TvDarkSurfaceVariant, RoundedCornerShape(8.dp)).padding(horizontal = 16.dp),
+                            modifier = Modifier.fillMaxWidth().height(56.dp)
+                                .background(TvDarkSurfaceVariant, RoundedCornerShape(8.dp))
+                                .border(
+                                    1.5.dp,
+                                    when {
+                                        urlInvalid -> TvError
+                                        urlFieldFocused -> TvFocusBorder
+                                        else -> Color.Transparent
+                                    },
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .padding(horizontal = 16.dp),
                             contentAlignment = Alignment.CenterStart
                         ) {
                             BasicTextField(
                                 value = tempUrl,
                                 onValueChange = { tempUrl = it },
-                                modifier = Modifier.fillMaxWidth().focusRequester(urlFieldFocus),
+                                modifier = Modifier.fillMaxWidth().focusRequester(urlFieldFocus)
+                                    .onFocusChanged { urlFieldFocused = it.isFocused },
                                 textStyle = androidx.compose.ui.text.TextStyle(color = TvOnSurface, fontSize = 16.sp),
                                 cursorBrush = SolidColor(TvPrimary),
-                                singleLine = true
+                                singleLine = true,
+                                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                    imeAction = androidx.compose.ui.text.input.ImeAction.Done
+                                ),
+                                keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                                    onDone = {
+                                        if (!urlInvalid && tempUrl.isNotBlank()) {
+                                            scope.launch { settingsManager.setEpgUrl(tempUrl.trim()) }
+                                            showEpgUrlDialog = false
+                                        }
+                                    }
+                                )
+                            )
+                        }
+                        if (urlInvalid) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                "URL must start with http:// or https://",
+                                color = TvError,
+                                style = MaterialTheme.typography.bodySmall
                             )
                         }
                         Spacer(modifier = Modifier.height(24.dp))
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                             Surface(
                                 onClick = { showEpgUrlDialog = false },
+                                modifier = Modifier.heightIn(min = 44.dp),
                                 shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
-                                colors = ClickableSurfaceDefaults.colors(containerColor = TvDarkSurfaceVariant, focusedContainerColor = TvDarkSurface)
-                            ) { Text("Cancel", modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp), color = TvOnSurface) }
+                                colors = ClickableSurfaceDefaults.colors(containerColor = TvDarkSurfaceVariant, focusedContainerColor = TvDarkSurface),
+                                border = ClickableSurfaceDefaults.border(
+                                    focusedBorder = androidx.tv.material3.Border(
+                                        border = androidx.compose.foundation.BorderStroke(2.dp, TvFocusBorder),
+                                        shape = RoundedCornerShape(8.dp)
+                                    )
+                                )
+                            ) { Text("Cancel", modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp), color = TvOnSurface) }
                             Spacer(modifier = Modifier.width(16.dp))
                             Surface(
                                 onClick = {
-                                    scope.launch { settingsManager.setEpgUrl(tempUrl) }
-                                    showEpgUrlDialog = false
+                                    if (!urlInvalid && tempUrl.isNotBlank()) {
+                                        scope.launch { settingsManager.setEpgUrl(tempUrl.trim()) }
+                                        showEpgUrlDialog = false
+                                    }
                                 },
+                                modifier = Modifier.heightIn(min = 44.dp),
                                 shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
-                                colors = ClickableSurfaceDefaults.colors(containerColor = TvPrimaryContainer, focusedContainerColor = TvPrimary)
-                            ) { Text("Save", modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp), color = Color.White) }
+                                colors = ClickableSurfaceDefaults.colors(
+                                    containerColor = if (urlInvalid || tempUrl.isBlank()) TvDarkSurfaceVariant else TvPrimaryContainer,
+                                    focusedContainerColor = if (urlInvalid || tempUrl.isBlank()) TvDarkSurfaceVariant else TvPrimary
+                                ),
+                                border = ClickableSurfaceDefaults.border(
+                                    focusedBorder = androidx.tv.material3.Border(
+                                        border = androidx.compose.foundation.BorderStroke(2.dp, TvFocusBorder),
+                                        shape = RoundedCornerShape(8.dp)
+                                    )
+                                )
+                            ) {
+                                Text(
+                                    "Save",
+                                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
+                                    color = if (urlInvalid || tempUrl.isBlank()) TvOnSurfaceVariant else TvOnPrimary
+                                )
+                            }
                         }
                     }
+                }
+            }
+        }
+
+        // ─── Destructive-action confirmations ───
+        if (showSignOutConfirm) {
+            ConfirmDialog(
+                title = "Change sign-in method?",
+                body = "This signs you out. You'll need to log in again on the next screen.",
+                confirmLabel = "Sign out",
+                onConfirm = {
+                    scope.launch {
+                        settingsManager.setSetupMode(null)
+                        settingsManager.clearAuthData()
+                    }
+                    showSignOutConfirm = false
+                },
+                onDismiss = { showSignOutConfirm = false }
+            )
+        }
+        if (showLogoutConfirm) {
+            ConfirmDialog(
+                title = "Logout from JTV?",
+                body = "Your saved credentials will be cleared and the app will return to the login screen.",
+                confirmLabel = "Logout",
+                onConfirm = {
+                    scope.launch { settingsManager.clearAuthData() }
+                    showLogoutConfirm = false
+                },
+                onDismiss = { showLogoutConfirm = false }
+            )
+        }
+    }
+}
+
+/**
+ * Shared destructive-action confirmation: Cancel holds initial focus so a stray OK/Enter can
+ * never confirm, mirroring the hide-channel dialog convention.
+ */
+@Composable
+private fun ConfirmDialog(
+    title: String,
+    body: String,
+    confirmLabel: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .widthIn(max = 420.dp)
+                .background(TvDarkSurface, RoundedCornerShape(16.dp))
+                .padding(24.dp)
+        ) {
+            Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = TvOnBackground)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(body, style = MaterialTheme.typography.bodyMedium, color = TvOnSurfaceVariant)
+            Spacer(modifier = Modifier.height(20.dp))
+            val cancelFocus = remember { FocusRequester() }
+            LaunchedEffect(Unit) { runCatching { cancelFocus.requestFocus() } }
+            Row(modifier = Modifier.fillMaxWidth().focusGroup(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Surface(
+                    onClick = onDismiss,
+                    modifier = Modifier.weight(1f).focusRequester(cancelFocus),
+                    shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
+                    colors = ClickableSurfaceDefaults.colors(
+                        containerColor = TvOnBackground,
+                        focusedContainerColor = Color.White,
+                        contentColor = TvDarkBackground,
+                        focusedContentColor = TvDarkBackground
+                    ),
+                    border = ClickableSurfaceDefaults.border(
+                        focusedBorder = androidx.tv.material3.Border(
+                            border = androidx.compose.foundation.BorderStroke(3.dp, TvFocusBorder),
+                            shape = RoundedCornerShape(10.dp)
+                        )
+                    )
+                ) {
+                    Text(
+                        "Cancel",
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                        color = TvDarkBackground,
+                        fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.titleMedium,
+                        textAlign = TextAlign.Center
+                    )
+                }
+                Surface(
+                    onClick = onConfirm,
+                    modifier = Modifier.weight(1f),
+                    shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
+                    colors = ClickableSurfaceDefaults.colors(
+                        containerColor = TvError.copy(alpha = 0.18f),
+                        focusedContainerColor = TvError.copy(alpha = 0.35f)
+                    ),
+                    border = ClickableSurfaceDefaults.border(
+                        focusedBorder = androidx.tv.material3.Border(
+                            border = androidx.compose.foundation.BorderStroke(3.dp, TvFocusBorder),
+                            shape = RoundedCornerShape(10.dp)
+                        )
+                    )
+                ) {
+                    Text(
+                        confirmLabel,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                        color = TvError,
+                        fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.titleMedium,
+                        textAlign = TextAlign.Center
+                    )
                 }
             }
         }
@@ -796,6 +1071,11 @@ private fun ChannelLanguagesDialog(
     onDismiss: () -> Unit
 ) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        // Entry focus on the first row: every other dialog anchors focus, these two didn't — the
+        // first OK press could land on whatever Compose happened to focus and toggle an
+        // unintended language / unhide a channel.
+        val firstRowFocus = remember { androidx.compose.ui.focus.FocusRequester() }
+        LaunchedEffect(Unit) { runCatching { firstRowFocus.requestFocus() } }
         Column(
             modifier = Modifier
                 .fillMaxWidth(0.92f)
@@ -830,7 +1110,8 @@ private fun ChannelLanguagesDialog(
                         label = "All Languages",
                         selected = selected.isEmpty(),
                         count = null,
-                        onClick = onClear
+                        onClick = onClear,
+                        modifier = Modifier.focusRequester(firstRowFocus)
                     )
                 }
                 items(available, key = { it }) { lang ->
@@ -879,16 +1160,275 @@ private fun ChannelLanguagesDialog(
     }
 }
 
-/** One checkable language row inside [ChannelLanguagesDialog], with its channel count. */
+/**
+ * Settings "Hide / Unhide Channels" manager — the single hidden-channels UI (it replaced the old
+ * unhide-only dialog). Lists every channel in the current language scope with a one-OK toggle per
+ * row; the Hidden view additionally resolves hidden channels from the FULL list, so a channel
+ * hidden before a language filter was set can always be found and unhidden. Hiding removes a
+ * channel from the grid, favourites, search, EPG and zap lists everywhere (one shared persisted
+ * set). D-pad: rows + All/Hidden/Visible chips + CH±/PgUp-Dn page jumps; mouse: hover-to-focus,
+ * click, native wheel; touch: ≥48dp rows.
+ */
 @Composable
+private fun ChannelManagerDialog(
+    channels: List<com.fenyx.jtv.data.Channel>,
+    allChannels: List<com.fenyx.jtv.data.Channel>,
+    hidden: Set<String>,
+    languageSummary: String,
+    onToggle: (String) -> Unit,
+    onShowAll: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val isTouch = LocalIsTouch.current
+    val focusManager = LocalFocusManager.current
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        // Re-anchors focus on view switches and row removals (an unhide in the Hidden view / a
+        // hide in the Visible view removes the focused row — without this the dialog went
+        // focusless and the remote died). Keyed on the list SIZE too: an in-place Hide↔Unhide
+        // toggle in the All view changes no sizes, so focus is never yanked mid-browse.
+        val firstRowFocus = remember { FocusRequester() }
+        var view by remember { mutableStateOf(0) } // 0 = All · 1 = Hidden · 2 = Visible
+        // The Hidden view ignores the language scope: every hidden channel, from the full list.
+        val hiddenEverywhere = remember(allChannels, hidden) {
+            allChannels.filter { it.id in hidden }.sortedBy { it.name.trim().lowercase() }
+        }
+        val visibleList = remember(channels, hiddenEverywhere, view) {
+            when (view) {
+                1 -> hiddenEverywhere
+                2 -> channels.filter { it.id !in hidden }
+                else -> channels
+            }
+        }
+        LaunchedEffect(view, visibleList.size) {
+            kotlinx.coroutines.delay(60)
+            runCatching { firstRowFocus.requestFocus() }
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .widthIn(max = 560.dp)
+                .background(TvDarkSurface, RoundedCornerShape(16.dp))
+                .padding(24.dp)
+        ) {
+            Text(
+                "Hide / Unhide Channels",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = TvOnBackground
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                "Scope: $languageSummary · ${channels.size} channels. Hidden channels disappear " +
+                    "from Home, search, EPG and zap lists; the Hidden tab lists them across all languages.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TvOnSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Chips carry labels ONLY — the old "All · 1300 / Hidden · 12 / Visible · 1288" chips
+            // summed to ~336dp and clipped the third chip off the right edge inside a ~283dp
+            // portrait dialog. The active view's count now lives in the trailing text, which
+            // shrinks (weight + ellipsis) instead of pushing the chips out.
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                ManagerChip("All", view == 0) { view = 0 }
+                ManagerChip("Hidden", view == 1) { view = 1 }
+                ManagerChip("Visible", view == 2) { view = 2 }
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    when (view) {
+                        1 -> "${hidden.size} hidden"
+                        2 -> "${channels.size - hidden.size} visible"
+                        else -> "${channels.size} channels"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = TvOnSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+
+            if (visibleList.isEmpty()) {
+                Text(
+                    when (view) {
+                        1 -> "Nothing hidden. Hide a channel here, from the Home long-press, or via the player's settings panel."
+                        2 -> "Every channel in scope is hidden — switch to All or Hidden to bring some back."
+                        else -> "No channels match the selected languages."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TvOnSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 20.dp)
+                )
+            } else {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .heightIn(max = 420.dp)
+                        .tvFastNavKeys(focusManager, pageRows = 6)
+                        .focusRestorer()
+                ) {
+                    itemsIndexed(visibleList, key = { _, ch -> ch.id }) { idx, ch ->
+                        val isHidden = ch.id in hidden
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .then(if (idx == 0) Modifier.focusRequester(firstRowFocus) else Modifier),
+                            onClick = { onToggle(ch.id) },
+                            shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
+                            scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),
+                            colors = ClickableSurfaceDefaults.colors(
+                                containerColor = if (isHidden) Color.Transparent
+                                else TvDarkSurfaceVariant.copy(alpha = 0.4f),
+                                focusedContainerColor = TvDarkSurfaceVariant
+                            ),
+                            border = ClickableSurfaceDefaults.border(
+                                focusedBorder = androidx.tv.material3.Border(
+                                    border = androidx.compose.foundation.BorderStroke(2.dp, TvFocusBorder),
+                                    shape = RoundedCornerShape(8.dp)
+                                )
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .padding(horizontal = 14.dp, vertical = 13.dp)
+                                    .fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        ch.name,
+                                        color = if (isHidden) TvOnSurfaceVariant else TvOnSurface,
+                                        // Struck-through name reads unambiguously as "hidden".
+                                        textDecoration = if (isHidden) TextDecoration.LineThrough else null,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        ch.group,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = TvOnSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    if (isHidden) "Unhide" else "Hide",
+                                    color = if (isHidden) TvPrimary else TvOnSurfaceVariant,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (hidden.isNotEmpty() && view != 2) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Surface(
+                    onClick = onShowAll,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
+                    scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),
+                    colors = ClickableSurfaceDefaults.colors(
+                        containerColor = Color.Transparent,
+                        focusedContainerColor = TvDarkSurfaceVariant
+                    ),
+                    border = ClickableSurfaceDefaults.border(
+                        focusedBorder = androidx.tv.material3.Border(
+                            border = androidx.compose.foundation.BorderStroke(2.dp, TvFocusBorder),
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                    )
+                ) {
+                    Text(
+                        "Show all (${hidden.size})",
+                        color = TvPrimary,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp).fillMaxWidth()
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            Surface(
+                onClick = onDismiss,
+                modifier = Modifier.fillMaxWidth(),
+                shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
+                scale = ClickableSurfaceDefaults.scale(focusedScale = 1.02f),
+                colors = ClickableSurfaceDefaults.colors(
+                    containerColor = TvOnBackground,
+                    focusedContainerColor = Color.White,
+                    contentColor = TvDarkBackground,
+                    focusedContentColor = TvDarkBackground
+                ),
+                border = ClickableSurfaceDefaults.border(
+                    focusedBorder = androidx.tv.material3.Border(
+                        border = androidx.compose.foundation.BorderStroke(3.dp, TvFocusBorder),
+                        shape = RoundedCornerShape(10.dp)
+                    )
+                )
+            ) {
+                Text(
+                    "Done",
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                    color = TvDarkBackground,
+                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.titleMedium,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+    }
+}
+
+/** All / Hidden / Visible view chip for [ChannelManagerDialog]; label only — counts live in the row's trailing text. */
+@Composable
+private fun ManagerChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    val isTouch = LocalIsTouch.current
+    Surface(
+        onClick = onClick,
+        modifier = if (isTouch) Modifier.heightIn(min = 48.dp) else Modifier,
+        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(16.dp)),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.05f),
+        colors = ClickableSurfaceDefaults.colors(
+            containerColor = if (selected) TvPrimaryContainer.copy(alpha = 0.45f)
+            else TvDarkSurfaceVariant.copy(alpha = 0.5f),
+            focusedContainerColor = TvPrimaryContainer
+        ),
+        border = ClickableSurfaceDefaults.border(
+            focusedBorder = androidx.tv.material3.Border(
+                border = androidx.compose.foundation.BorderStroke(2.dp, TvFocusBorder),
+                shape = RoundedCornerShape(16.dp)
+            )
+        )
+    ) {
+        Text(
+            label,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            color = if (selected) TvPrimary else TvOnSurface,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            style = MaterialTheme.typography.labelLarge,
+            maxLines = 1
+        )
+    }
+}
+
+/** One checkable language row inside [ChannelLanguagesDialog], with its channel count. */@Composable
 private fun LanguageToggleRow(
     label: String,
     selected: Boolean,
     count: Int?,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         onClick = onClick,
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),
@@ -897,14 +1437,16 @@ private fun LanguageToggleRow(
             focusedContainerColor = TvDarkSurfaceVariant
         ),
         border = ClickableSurfaceDefaults.border(
+            // 1dp @ 40% alpha was invisible at couch distance — every other row uses the solid
+            // 2dp ring; these dialog rows now match.
             focusedBorder = androidx.tv.material3.Border(
-                border = androidx.compose.foundation.BorderStroke(1.dp, TvPrimary.copy(alpha = 0.4f)),
+                border = androidx.compose.foundation.BorderStroke(2.dp, TvFocusBorder),
                 shape = RoundedCornerShape(8.dp)
             )
         )
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp).fillMaxWidth(),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 13.dp).fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
@@ -958,11 +1500,15 @@ fun SettingsItem(
     valueColor: Color = com.fenyx.jtv.theme.TvPrimary,
     icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
     modifier: Modifier = Modifier,
+    // False = display-only row (e.g. About): not focusable, not clickable — a highlighted row
+    // whose OK did nothing read as a bug and burned a D-pad stop.
+    clickable: Boolean = true,
     onClick: () -> Unit
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
         onClick = onClick,
+        enabled = clickable,
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(12.dp)),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),
         colors = ClickableSurfaceDefaults.colors(
@@ -1052,15 +1598,22 @@ private fun SettingsToggle(
                 )
             }
             Spacer(modifier = Modifier.width(12.dp))
-            // Custom toggle
-            Box(
-                modifier = Modifier
-                    .width(48.dp)
-                    .height(26.dp)
-                    .clip(RoundedCornerShape(13.dp))
-                    .background(if (isEnabled) TvPrimary.copy(alpha = 0.3f) else TvDarkSurfaceVariant)
-                    .padding(3.dp)
-            ) {
+             Text(
+                 if (isEnabled) "On" else "Off",
+                 color = if (isEnabled) TvPrimary else TvOnSurfaceVariant,
+                 fontWeight = FontWeight.SemiBold,
+                 style = MaterialTheme.typography.labelLarge
+             )
+             Spacer(modifier = Modifier.width(10.dp))
+             // Custom toggle
+             Box(
+                 modifier = Modifier
+                     .width(48.dp)
+                     .height(26.dp)
+                     .clip(RoundedCornerShape(13.dp))
+                     .background(if (isEnabled) TvPrimary.copy(alpha = 0.3f) else TvDarkSurfaceVariant)
+                     .padding(3.dp)
+             ) {
                 Box(
                     modifier = Modifier
                         .size(20.dp)
@@ -1104,6 +1657,12 @@ private fun PickerDialog(
             )
             Spacer(modifier = Modifier.height(16.dp))
 
+            // The currently-selected option anchors initial focus: without this the dialog opened
+            // wherever Compose dropped focus, and picking "Zoom" meant arrowing from the top of
+            // the list every single time.
+            val selectedRowFocus = remember { FocusRequester() }
+            LaunchedEffect(Unit) { runCatching { selectedRowFocus.requestFocus() } }
+
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(4.dp),
                 // Same short-screen fix as the Channel Languages dialog: let the Cancel button keep
@@ -1115,7 +1674,9 @@ private fun PickerDialog(
                     val isSelected = value == currentValue
 
                     Surface(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().then(
+                            if (isSelected) Modifier.focusRequester(selectedRowFocus) else Modifier
+                        ),
                         onClick = { onSelect(value) },
                         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
                         scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),
@@ -1125,7 +1686,7 @@ private fun PickerDialog(
                         ),
                         border = ClickableSurfaceDefaults.border(
                             focusedBorder = androidx.tv.material3.Border(
-                                border = androidx.compose.foundation.BorderStroke(1.dp, TvPrimary.copy(alpha = 0.4f)),
+                                border = androidx.compose.foundation.BorderStroke(2.dp, TvPrimary),
                                 shape = RoundedCornerShape(8.dp)
                             )
                         )

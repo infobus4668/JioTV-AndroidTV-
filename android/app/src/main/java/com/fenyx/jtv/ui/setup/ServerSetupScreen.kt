@@ -4,10 +4,12 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -68,9 +70,13 @@ fun ServerSetupScreen(
     val urlFocus = remember { FocusRequester() }
     val tokenFocus = remember { FocusRequester() }
     val connectFocus = remember { FocusRequester() }
+    val isTouch = LocalIsTouch.current
     // Focus the code field first in JTV mode (there's no URL field to focus). Landing focus on a field
-    // opens the system keyboard for it.
-    LaunchedEffect(Unit) { runCatching { (if (jtvMode) tokenFocus else urlFocus).requestFocus() } }
+    // opens the system keyboard for it — TV-only: on touch the auto-opened IME slapped over the
+    // screen before the user chose a field (SearchScreen hit the same and gates it the same way).
+    LaunchedEffect(Unit) {
+        if (!isTouch) runCatching { (if (jtvMode) tokenFocus else urlFocus).requestFocus() }
+    }
 
     fun connect() {
         if (!jtvMode && serverUrl.isBlank()) { error = "Enter the server URL."; return }
@@ -106,7 +112,12 @@ fun ServerSetupScreen(
         Column(
             modifier = modifier
                 .fillMaxSize()
-                .tvOverscan(),
+                .tvOverscan()
+                // Portrait phones: the Back/Connect row sits below the fields inside the exact
+                // area the IME overlays — imePadding lifts the buttons above the keyboard and the
+                // scroll keeps everything reachable on short windows (same fix LoginScreen got).
+                .imePadding()
+                .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
             // Top-anchored (not centered) so the fields stay in the upper area — the keyboard overlays
             // the empty lower area and NOTHING shifts when it opens.
@@ -169,12 +180,21 @@ fun ServerSetupScreen(
                     colors = ClickableSurfaceDefaults.colors(
                         containerColor = TvDarkSurfaceVariant,
                         focusedContainerColor = TvDarkSurface
+                    ),
+                    // The focused colour is DARKER than the rest colour here — without a border
+                    // ring the focus cue was an inverted, easy-to-miss dimming.
+                    border = ClickableSurfaceDefaults.border(
+                        focusedBorder = androidx.tv.material3.Border(
+                            border = BorderStroke(2.dp, TvFocusBorder),
+                            shape = RoundedCornerShape(10.dp)
+                        )
                     )
                 ) {
                     Text("Back", modifier = Modifier.padding(horizontal = 28.dp, vertical = 14.dp), color = TvOnSurface)
                 }
                 Surface(
                     onClick = { if (!isConnecting) connect() },
+                    enabled = !isConnecting,
                     modifier = Modifier.focusRequester(connectFocus),
                     shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
                     scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
@@ -183,12 +203,26 @@ fun ServerSetupScreen(
                         focusedContainerColor = TvPrimary
                     )
                 ) {
-                    Text(
-                        if (isConnecting) "Connecting…" else "Connect",
+                    Row(
                         modifier = Modifier.padding(horizontal = 32.dp, vertical = 14.dp),
-                        color = TvOnBackground,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // Visible in-flight affordance + disabled retries while connecting
+                        // (clicks were swallowed silently before, with the label the only signal).
+                        if (isConnecting) {
+                            androidx.compose.material3.CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = TvOnBackground
+                            )
+                        }
+                        Text(
+                            if (isConnecting) "Connecting…" else "Connect",
+                            color = TvOnBackground,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                 }
             }
         }

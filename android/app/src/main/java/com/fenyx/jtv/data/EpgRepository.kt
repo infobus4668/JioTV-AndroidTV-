@@ -286,17 +286,23 @@ class EpgRepository(private val context: Context) {
         return@withContext epgMap
     }
 
-    suspend fun getNativeEpgForChannel(channelId: String): List<EpgProgram> = withContext(Dispatchers.IO) {
+    suspend fun getNativeEpgForChannel(channelId: String, offset: Int = 0): List<EpgProgram> = withContext(Dispatchers.IO) {
         var connection: HttpURLConnection? = null
         try {
-            val url = URL("https://jiotvapi.cdn.jio.com/apis/v1.3/getepg/get?offset=0&channel_id=$channelId&langId=6")
+            val url = URL("https://jiotvapi.cdn.jio.com/apis/v1.3/getepg/get?offset=$offset&channel_id=$channelId&langId=6")
             connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "GET"
             connection.connectTimeout = 10000
             connection.readTimeout = 15000
-            connection.setRequestProperty("User-Agent", "Mozilla/5.0")
+            connection.setRequestProperty("User-Agent", "okhttp/4.12.0")
+            connection.setRequestProperty("appname", "RJIL_JioTV")
+            connection.setRequestProperty("os", "android")
+            connection.setRequestProperty("devicetype", "phone")
             if (connection.responseCode in 200..299) {
-                val text = connection.inputStream.bufferedReader().use { it.readText() }
+                val isGzip = "gzip".equals(connection.contentEncoding, ignoreCase = true)
+                val rawStream = connection.inputStream
+                val stream = if (isGzip && rawStream != null) GZIPInputStream(rawStream) else rawStream
+                val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
                 val json = org.json.JSONObject(text)
                 return@withContext parseNativeEpg(json)
             }
