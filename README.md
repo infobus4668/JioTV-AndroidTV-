@@ -125,6 +125,9 @@ in a browser and feed any IPTV player. It's a single Docker image (Node + React)
 cd server && docker compose up -d --build   # then open http://<host>:8080
 ```
 
+> If your Docker Compose version errors on a missing `.env`, create an empty one first
+> (`touch .env` / `type nul > .env`) — see [`server/README.md`](server/README.md).
+
 See **[`server/README.md`](server/README.md)** for full setup, the API, and details.
 
 ---
