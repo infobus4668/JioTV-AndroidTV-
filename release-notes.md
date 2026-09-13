@@ -74,4 +74,3 @@ same.
 ## Security & tooling
 - Jio tokens are excluded from Android cloud/device backups; `Log.v/d` are stripped from release builds.
 - The signing keystore stays out of the repo tree (loaded via the `JTV_SIGNING_PROPS` env var).
-- GitHub Actions CI: Android unit tests + build, server typecheck, web typecheck + build, secret scan.
