@@ -16,7 +16,7 @@
 </div>
 
 > **A device-adaptive Live TV client** built on [JioTV-AndroidTV-](https://github.com/F-e-n-y-x/JioTV-AndroidTV-)
-> `v1.5.2` — a single, maintained release **`v1.1`** (see [Changelog](#-changelog) below). It adds a
+> `v1.5.2` — maintained releases **`v1.1` → `v1.2`** (see [Changelog](#-changelog) below). It adds a
 > phone/tablet/TV-adaptive UI, a full EPG time-grid with catch-up and time-shift, a channel language
 > filter, an A–Z sort, category icons, a Settings-side hide/unhide channel manager, a customizable
 > on-screen player dock, and a fully responsive companion web player. The signing key is the mod's
@@ -47,21 +47,21 @@
 
 ## 📥 Install
 
-1. **Download** the latest `JTV-v1.1.apk` from the [**Releases page**](https://github.com/infobus4668/JioTV-AndroidTV-/releases/latest).
+1. **Download** the latest `JTV-v1.2.apk` from the [**Releases page**](https://github.com/infobus4668/JioTV-AndroidTV-/releases/latest).
 2. **Sideload** it onto your Android TV with ADB:
 
    ```bash
    adb connect <YOUR_TV_IP>:5555
-   adb uninstall com.fenyx.jtv
-   adb install JTV-v1.1.apk
+   adb install -r JTV-v1.2.apk
    ```
+   (Coming from a differently-signed build, uninstall once: `adb uninstall com.fenyx.jtv`.)
 
    > 💡 Don't have ADB set up? You can also copy the APK to a USB drive and install it with a file-manager app like **"File Commander"** or **"X-plore"** on your TV.
 
 3. **Log in** with your Jio mobile number + OTP using the on-screen numpad.
 
-> ⚠️ **Fresh v1.1** (versionCode 1): uninstall any previously installed JTV build once before
-> installing — the lower build number blocks direct updates, even with the same signing key.
+> ⚠️ **v1.2** (versionCode 2) installs directly over v1.1 with the same signing key —
+> login and settings are kept. Only a different signing key needs an uninstall first.
 
 ---
 
@@ -211,7 +211,16 @@ A release build with no `JTV_SIGNING_PROPS` (and no gitignored `keystore.propert
 
 ## 📝 Changelog
 
-### v1.1 — the single, maintained release
+### v1.2 — stability & security must-fixes (current)
+- **Token refresh single-flight** — one refresh at a time under a `Mutex`; Jio-rejected
+  sessions remembered (`SessionExpiredException`) instead of retried per channel.
+- **Honest 403** — per-channel blocks (delisted/licensing) fail fast with "Jio isn't
+  providing this channel" and never trigger a token refresh.
+- **Voice Boost Off fix** — empty-buffer guard + filter reset + whole-frame processing;
+  Off no longer stops playback on zap/reload.
+- **Proxy allowlist** — server `proxyUpstream` only fetches `jio.com` / `*.jio.com`.
+
+### v1.1 — device-adaptive base
 Everything in this repository is folded into this one release. Highlights on top of the upstream
 `v1.5.2` base:
 

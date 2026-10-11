@@ -727,11 +727,23 @@ fun TvPlayerScreen(
             } else {
                 val fetchErr = result.exceptionOrNull()?.message ?: ""
                 android.util.Log.e("TvPlayer", "Failed to fetch stream: $fetchErr (catchup=${catchup != null})")
-                val authExpired = fetchErr.contains("401") || fetchErr.contains("403") || fetchErr.contains("419")
+                // 403 is per-channel (Jio blocked/delisted), NOT expired login — never treat it as auth
+                // or it triggers pointless refresh storms that can burn the refresh token.
+                val isBlocked = fetchErr.contains("403") || fetchErr.contains("blocked", ignoreCase = true)
+                val authExpired = !isBlocked &&
+                    (fetchErr.contains("401") || fetchErr.contains("419") ||
+                        fetchErr.contains("Session expired") || fetchErr.contains("Login expired"))
 
                 // REPLAYS fail fast and loud: a bad srno/programId/entitlement is deterministic —
                 // retrying the identical request just spins. Only an auth expiry is worth one
                 // refresh-retry; everything else surfaces immediately with the upstream reason.
+                // Live 403 is deterministic too (delisted/licensing) — surface it at once so the
+                // user can CH± away instead of sitting through 5 pointless retries.
+                if (isBlocked && catchup == null) {
+                    isBuffering = false
+                    playbackError = "Jio isn't providing this channel right now. Press CH+/CH- for the next one."
+                    return@LaunchedEffect
+                }
                 if (catchup != null && !authExpired) {
                     isBuffering = false
                     playbackError = "Couldn't start this replay (${fetchErr.take(80)})."
@@ -743,8 +755,12 @@ fun TvPlayerScreen(
                     playbackError = when {
                         // Replay entitlement is per-show/per-channel: a persistent 403 here means
                         // Jio doesn't allow this replay for the account — not a login problem.
-                        catchup != null && fetchErr.contains("403") ->
+                        catchup != null && isBlocked ->
                             "This show isn't available for replay on your account."
+                        // Live 403: Jio lists the channel but blocks the stream (delisted/licensing).
+                        // Tell the user to move on instead of wrongly saying "login expired".
+                        catchup == null && isBlocked ->
+                            "Jio isn't providing this channel right now. Press CH+/CH- for the next one."
                         authExpired && (playerSetupMode == "server" || playerSetupMode == "jtv") ->
                             "Server login expired. Re-login the Jio account on your JTV server, then press OK."
                         authExpired -> "Login expired. Please sign in again."

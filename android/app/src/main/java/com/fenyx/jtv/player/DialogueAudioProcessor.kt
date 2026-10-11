@@ -63,6 +63,9 @@ class DialogueAudioProcessor : BaseAudioProcessor() {
     }
 
     private fun recompute() {
+        // Coming back from Off (or after a reconfigure) the filters' history is stale: start clean
+        // so the first processed samples don't carry an old transient.
+        if (appliedLevel <= 0) { hpSide.reset(); presenceMid.reset() }
         val lvl = level
         when (lvl) {
             1 -> { sideGain = 0.80f; midGain = 1.00f; presenceMid.setPeaking(2600f, 0.9f, 3.0f, sampleRate) }
@@ -77,22 +80,30 @@ class DialogueAudioProcessor : BaseAudioProcessor() {
     }
 
     override fun queueInput(inputBuffer: ByteBuffer) {
+        // Media3 feeds an EMPTY buffer first (and after every stop()/re-prepare the output buffer is
+        // that same shared EMPTY_BUFFER). Copying it into replaceOutputBuffer(0) copies a buffer
+        // into itself -> IllegalArgumentException -> "Playback stopped" with Voice Boost Off. Nothing to do.
+        if (!inputBuffer.hasRemaining()) return
         val position = inputBuffer.position()
         val limit = inputBuffer.limit()
         val size = limit - position
+        // Read the (volatile, UI-thread-written) level ONCE per buffer, so a buffer is never checked
+        // at one level and processed with another's coefficients.
+        val lvl = level
+        if (lvl != appliedLevel) recompute()
         val output = replaceOutputBuffer(size)
 
-        if (level == 0) {
+        if (lvl == 0) {
             output.put(inputBuffer)
             output.flip()
             return
         }
-        if (level != appliedLevel) recompute()
 
         val mg = midGain
         val sg = sideGain
         var i = position
-        while (i < limit) {
+        val frameEnd = limit - 3 // whole 4-byte stereo frames only; never read past the limit
+        while (i < frameEnd) {
             val l = inputBuffer.getShort(i).toInt()
             val r = inputBuffer.getShort(i + 2).toInt()
             val mid = (l + r) * 0.5f

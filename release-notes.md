@@ -1,3 +1,54 @@
+# JTV v1.2 — stability & security must-fixes
+
+Built on v1.1 (`versionCode 2`, `versionName 1.2`, same signing key — installs
+directly over v1.1 with `adb install -r`, login and settings kept). Only fixes that
+qualify as correctness/security are in; no UI polish, no feature work. Deferred
+(midnight EPG, Sony Yay start-point, atomic server config, native XMLTV guide) stays
+deferred — see bottom.
+
+## Must-fix 1: token refresh single-flight + honest 403 (app)
+- `JioApiClient.refreshToken` now runs under a `Mutex`, re-reads credentials inside the
+  lock, and remembers a Jio-rejected session (`SessionExpiredException`) instead of
+  spamming the token service on every channel.
+- `getStreamUrl` 403 no longer triggers a refresh: a 403 is per-channel
+  (delisted/licensing, e.g. Zee list entries Jio still returns but blocks) and fails fast
+  with `ChannelBlockedException`. 401/419 still refresh exactly once.
+- Player (`TvPlayerScreen`) treats 403-blocked live channels as "Jio isn't providing this
+  channel right now. Press CH+/CH- for the next one." instead of the wrong
+  "Login expired", and surfaces it immediately without 5 pointless retries. Replays keep
+  their existing fail-fast path. Why it qualifies: parallel refreshes could burn the
+  fragile Jio refresh token ("refresh token not found") and force a full OTP re-login.
+
+## Must-fix 2: Voice Boost Off no longer stops playback (app)
+- `DialogueAudioProcessor.queueInput` ignores Media3's empty buffer (`!hasRemaining()`
+  return), snapshots the volatile level once per buffer, resets filter history when
+  returning from Off, and processes whole stereo frames only. Why it qualifies: with
+  Voice Boost Off, every channel change/reload fed the empty shared buffer into
+  `replaceOutputBuffer(0)` → `IllegalArgumentException` → "Playback stopped".
+  Workaround before this fix was leaving Voice Boost on Medium (the default).
+
+## Must-fix 3: proxy only fetches Jio hosts (server)
+- `proxyUpstream` rejects any `u=` URL whose host isn't `jio.com`/`*.jio.com` before
+  attaching credential headers. Why it qualifies: `/api/proxy` and `/seg` accept a
+  client-supplied URL; on an open-LAN server anyone could point it at an evil host and
+  harvest `ssoToken` / `__hdnea__` cookie. Internal `masterAlive` probes (server-resolved
+  URLs only) are unchanged.
+
+## Install
+```bash
+adb connect <YOUR_TV_IP>:5555
+adb install -r JTV-v1.2.apk
+```
+No uninstall needed when coming from v1.1 (same key, higher `versionCode`). Coming from
+a differently-signed build, uninstall once: `adb uninstall com.fenyx.jtv`.
+
+## Deferred (does not qualify for this release)
+- Midnight EPG next-day fetch, Sony Yay recorded-schedule start-point, app-side manifest
+  probe for live Zee fallback, server atomic `config.json` + `.bak`, native `/epg.xml.gz`
+  builder, standby/autostart. Each is real but rare/narrow (specific channels, hours, or
+  power-cut windows) — next pass, not this one.
+
+---
 # JTV v1.1 — device-adaptive Live TV
 
 A device-adaptive Live TV client built on [F-e-n-y-x/JioTV-AndroidTV-](https://github.com/F-e-n-y-x/JioTV-AndroidTV-)

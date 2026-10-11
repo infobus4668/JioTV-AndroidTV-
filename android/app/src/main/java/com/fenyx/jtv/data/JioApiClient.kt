@@ -4,6 +4,7 @@ import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
@@ -20,6 +21,28 @@ object JioApiClient {
     private const val OS = "android"
     private const val DEVICE_TYPE = "phone"
     private const val HOST = "jiotvapi.media.jio.com"
+
+    /** Jio rejected our refresh (e.g. "refresh token not found"): only a new sign-in fixes it. */
+    class SessionExpiredException(message: String) : Exception(message)
+
+    /** Thrown inside [refreshToken] when Jio's token service answers 4xx (not a network error). */
+    private class RefreshRejectedException(message: String) : Exception(message)
+
+    /** Jio refused this one channel (geturl 403 even with fresh credentials). Not a login problem. */
+    class ChannelBlockedException(message: String) : Exception(message)
+
+    /**
+     * Only one credential refresh may run at a time. Jio's refresh token is fragile: firing several
+     * refreshes at once (parallel 401s, a retry storm) can leave it "not found", after which nothing
+     * but a new OTP sign-in works.
+     */
+    private val refreshMutex = kotlinx.coroutines.sync.Mutex()
+
+    /**
+     * Access token Jio last REJECTED a refresh for. Until the user signs in again (new token) we don't
+     * ask Jio again: the session is gone and repeated attempts only spam the token service.
+     */
+    @Volatile private var rejectedAuthToken: String? = null
 
     data class AuthData(
         val ssoToken: String,
@@ -174,7 +197,31 @@ object JioApiClient {
                 // Older logins never stored a refreshToken; the endpoint can't work without it.
                 return@withContext Result.failure(Exception("No refresh token — sign out and sign in again to enable auto-refresh."))
             }
+            // Session already known-dead: don't spam Jio, tell the caller to re-login.
+            if (rejectedAuthToken != null && rejectedAuthToken == authData.authToken) {
+                return@withContext Result.failure(SessionExpiredException("Session expired — please sign in again."))
+            }
 
+            return@withContext refreshMutex.withLock {
+                // Re-read inside the lock: a concurrent refresh may have already fixed it.
+                val fresh = settingsManager.authDataFlow.first()
+                    ?: return@withLock Result.failure<Boolean>(Exception("No token"))
+                if (rejectedAuthToken != null && rejectedAuthToken == fresh.authToken) {
+                    return@withLock Result.failure<Boolean>(SessionExpiredException("Session expired — please sign in again."))
+                }
+                performRefreshToken(settingsManager, fresh)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception in refreshToken", e)
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun performRefreshToken(
+        settingsManager: com.fenyx.jtv.data.SettingsManager,
+        authData: AuthData
+    ): Result<Boolean> {
+        return try {
             val url = URL("https://auth.media.jio.com/tokenservice/apis/v1/refreshtoken?langId=6")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
@@ -216,16 +263,25 @@ object JioApiClient {
                             refreshToken = newRefreshToken.ifEmpty { authData.refreshToken }
                         )
                     )
+                    // A new access token means the session is alive again — clear any prior rejection.
+                    rejectedAuthToken = null
                     Log.d(TAG, "Token refreshed successfully")
-                    return@withContext Result.success(true)
+                    return Result.success(true)
                 }
             }
+            val code = connection.responseCode
             val errText = readResponseBody(connection, isError = true)
-            Log.e(TAG, "Refresh failed ${connection.responseCode}: $errText")
-            Result.failure(Exception("Refresh failed with code ${connection.responseCode}"))
+            Log.e(TAG, "Refresh failed $code: $errText")
+            // 4xx from the token service means Jio killed the session (e.g. "refresh token not found"):
+            // remember it so we ask for a fresh sign-in instead of spamming Jio on every channel.
+            if (code in 400..499) {
+                rejectedAuthToken = authData.authToken
+                return Result.failure<Boolean>(SessionExpiredException("Session expired — please sign in again."))
+            }
+            Result.failure<Boolean>(Exception("Refresh failed with code $code"))
         } catch (e: Exception) {
-            Log.e(TAG, "Exception in refreshToken", e)
-            Result.failure(e)
+            Log.e(TAG, "Exception in performRefreshToken", e)
+            Result.failure<Boolean>(e)
         }
     }
 
@@ -560,8 +616,20 @@ object JioApiClient {
             writer.close()
 
             val responseCode = connection.responseCode
-            
-            if ((responseCode == 401 || responseCode == 403 || responseCode == 419) && allowRefreshRetry) {
+
+            // A 403 from geturl is per-channel: Jio blocks it for this account (delisted / licensing)
+            // even though it's still in the channel list. It's NOT a token problem and no refresh
+            // fixes it — fail fast so a Zee zap never burns the fragile refresh token.
+            if (responseCode == 403) {
+                val errText = (connection.errorStream ?: connection.inputStream)
+                    ?.bufferedReader()?.use { it.readText() } ?: ""
+                Log.e(TAG, "getStreamUrl blocked (403) for channel $channelId body=${errText.take(200)}")
+                return@withContext Result.failure(
+                    ChannelBlockedException("Jio blocked this channel (403) — not available on your account right now.")
+                )
+            }
+
+            if ((responseCode == 401 || responseCode == 419) && allowRefreshRetry) {
                 // Token might be expired, try to refresh exactly once (allowRefreshRetry = false on the
                 // recursive call) so a persistently-failing token can never cause infinite recursion.
                 // In server mode this re-pulls fresh credentials from the proxy; in phone mode it uses

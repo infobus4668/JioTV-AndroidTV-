@@ -149,6 +149,26 @@ function withFreshToken(url: string, hdnea: string): string {
 }
 
 /**
+ * Only Jio's own hosts may be fetched with credential headers. The proxy endpoints accept a `u=`
+ * URL from the client, so without this check anyone with access (e.g. an open-LAN server) could
+ * point it at an evil host and harvest the Jio tokens we attach (ssoToken / __hdnea__ cookie).
+ */
+function assertJioHost(targetUrl: string): URL {
+  let u: URL;
+  try {
+    u = new URL(targetUrl);
+  } catch {
+    throw new Error("Refusing to proxy an invalid URL");
+  }
+  const host = u.hostname.toLowerCase();
+  const ok =
+    (u.protocol === "https:" || u.protocol === "http:") &&
+    (host === "jio.com" || host.endsWith(".jio.com"));
+  if (!ok) throw new Error(`Refusing to proxy non-Jio host: ${host || "(empty)"}`);
+  return u;
+}
+
+/**
  * Proxies one upstream request (manifest or segment) with a fresh token + the stream headers, so the
  * browser never talks to the Jio CDN directly (defeats CORS) and never sees an expired token.
  */
@@ -157,6 +177,7 @@ export async function proxyUpstream(
   targetUrl: string,
   rangeHeader?: string
 ): Promise<Response> {
+  assertJioHost(targetUrl);
   const c = await getStream(channelId);
   const url = withFreshToken(targetUrl, c.hdnea);
   // The AES-128 key for the non-DRM "Fallback" HLS lives on tv.media.jio.com and authenticates like
